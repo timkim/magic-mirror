@@ -48,7 +48,16 @@ function control(def: SettingDef, settings: Settings): { el: HTMLElement; update
       for (const o of def.options) s.append(new Option(o.label, o.value));
       s.addEventListener('change', () => settings.set(def.key, s.value));
       row.append(s);
-      return { el: row, update: (v) => { s.value = String(v); } };
+      return {
+        el: row,
+        update: (v) => {
+          // Options can change at runtime (e.g. camera slots from the open file).
+          if (s.options.length !== def.options.length || def.options.some((o, i) => s.options[i].value !== o.value)) {
+            s.replaceChildren(...def.options.map((o) => new Option(o.label, o.value)));
+          }
+          s.value = String(v);
+        },
+      };
     }
     case 'vec3': {
       const wrap = document.createElement('span');

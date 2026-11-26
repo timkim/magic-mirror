@@ -230,7 +230,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     if (mtype == 3.0 && emit > 0.0) {
       // TODO(match): calibrate emission strength against MagicaVoxel (_emit, _flux, _ldr).
-      radiance += throughput * albedo * emit * exp2(flux) * 4.0;
+      radiance += throughput * albedo * emit * exp2(flux) * 0.5;
     }
 
     let isMetal = (mtype == 1.0 || mtype == 4.0) && rand() < metal;

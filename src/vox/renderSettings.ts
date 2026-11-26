@@ -48,14 +48,31 @@ export function settingsFromVox(file: VoxFile): Record<string, SettingValue> {
   const lens = renderObject(file, '_lens');
   if (lens) {
     setNum('cam.fov', lens._fov);
-    setNum('cam.aperture', lens._dof);
-    setNum('post.exposure', lens._expo);
-    setNum('post.vignette', lens._vig);
+    // TODO(match): MagicaVoxel's aperture units vs ours.
+    setNum('cam.aperture', lens._aperture ?? lens._dof);
+  }
+  const film = renderObject(file, '_film');
+  if (film) {
+    // TODO(match): _expo looks like a linear multiplier (1 = neutral); stored here as EV.
+    setNum('post.exposure', film._expo, (v) => (v > 0 ? Math.log2(v) : 0));
+    setNum('post.vignette', film._vig);
+    setNum('post.gamma', film._gam);
+    if (film._aces !== undefined) out['post.tonemap'] = film._aces === '1' ? 'aces' : 'none';
+  }
+  const bounce = renderObject(file, '_bounce');
+  if (bounce) {
+    const n = Math.max(...nums(`${bounce._diffuse ?? ''} ${bounce._specular ?? ''}`));
+    if (Number.isFinite(n)) out['rt.bounces'] = Math.min(32, n);
+  }
+  const setting = renderObject(file, '_setting');
+  if (setting) {
+    if (setting._ground !== undefined) out['ground.enabled'] = setting._ground === '1';
+    if (setting._bg_c !== undefined) out['bg.mode'] = setting._bg_c === '1' ? 'color' : 'sky';
   }
   const bg = renderObject(file, '_bg');
   if (bg) {
     const c = colour(bg._color);
-    if (c) { out['bg.color'] = c; out['bg.mode'] = 'color'; }
+    if (c) out['bg.color'] = c;
   }
   const ground = renderObject(file, '_ground');
   if (ground) {
@@ -63,21 +80,45 @@ export function settingsFromVox(file: VoxFile): Record<string, SettingValue> {
     if (c) out['ground.color'] = c;
   }
 
-  // Camera slot 0, if the user stored one (unused slots have radius 0).
-  const cam = file.cameras.find((c) => c.id === 0 && Number(c.attrs._radius) > 0);
-  if (cam) {
-    const focus = nums(cam.attrs._focus);
-    const ang = nums(cam.attrs._angle);
-    if (focus.length === 3) out['cam.target'] = [focus[0], focus[1], focus[2]];
-    // File yaw is the panel yaw with the sign flipped (verified). TODO(match): check pitch sign and
-    // the zero direction of yaw against a reference render.
-    if (ang.length >= 2) { out['cam.pitch'] = ang[0]; out['cam.yaw'] = -ang[1]; }
-    setNum('cam.distance', cam.attrs._radius);
-    setNum('cam.fov', cam.attrs._fov);
-    if (cam.attrs._mode === 'orth') {
-      out['cam.projection'] = 'orth';
-      setNum('cam.orthoSize', cam.attrs._frustum);
-    }
+  Object.assign(out, cameraFromSlot(file, 0));
+  return out;
+}
+
+/** Ids of camera slots the user stored (unused slots have radius 0). */
+export function storedCameraSlots(file: VoxFile): number[] {
+  return file.cameras.filter((c) => Number(c.attrs._radius) > 0 || Number(c.attrs._frustum) > 0).map((c) => c.id).sort((a, b) => a - b);
+}
+
+/** Offset between MagicaVoxel's stored yaw and our orbit yaw. TODO(match): calibrate with a reference. */
+export const YAW_OFFSET = -90;
+const wrap = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
+
+/** Camera settings from one of MagicaVoxel's ten camera slots. */
+export function cameraFromSlot(file: VoxFile, id: number): Record<string, SettingValue> {
+  const out: Record<string, SettingValue> = {};
+  const cam = file.cameras.find((c) => c.id === id);
+  if (!cam || !(Number(cam.attrs._radius) > 0)) return out;
+  const focus = nums(cam.attrs._focus);
+  const ang = nums(cam.attrs._angle);
+  if (focus.length === 3) out['cam.target'] = [focus[0], focus[1], focus[2]];
+  // Stored pitch is negative when looking down; ours is positive when the camera is above.
+  // Stored yaw is the panel yaw negated (verified). TODO(match): yaw zero direction.
+  if (ang.length >= 2) {
+    out['cam.pitch'] = Math.max(-89, Math.min(89, -ang[0]));
+    out['cam.yaw'] = wrap(ang[1] + YAW_OFFSET);
+  }
+  const fov = nums(cam.attrs._fov);
+  if (fov.length) out['cam.fov'] = fov[0];
+  const mode = cam.attrs._mode;
+  if (mode === 'orth' || mode === 'iso') {
+    out['cam.projection'] = 'orth';
+    // Panel zoom = 2 × _frustum; treated as the visible height. TODO(match): verify.
+    const fr = nums(cam.attrs._frustum);
+    if (fr.length) out['cam.orthoSize'] = fr[0] * 2;
+    out['cam.distance'] = 2000;
+  } else {
+    out['cam.projection'] = 'pers';
+    out['cam.distance'] = Number(cam.attrs._radius);
   }
   return out;
 }

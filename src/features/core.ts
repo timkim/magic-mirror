@@ -2,8 +2,23 @@
 // Defaults approximate a fresh MagicaVoxel scene. TODO(match): tune against references.
 
 import type { Feature } from '../core/feature';
-import { settingsFromVox } from '../vox/renderSettings';
+import { cameraFromSlot, settingsFromVox, storedCameraSlots } from '../vox/renderSettings';
+import type { Settings } from '../core/settings';
+import type { VoxFile } from '../vox/types';
+import type { VoxelGrid } from '../vox/scene';
 import { frameScene } from '../render/params';
+
+const scenes = new WeakMap<Settings, { file: VoxFile; grid: VoxelGrid }>();
+const watched = new WeakSet<Settings>();
+
+function applySlot(settings: Settings, slot: string) {
+  const sc = scenes.get(settings);
+  if (!sc) return;
+  if (slot === 'auto') {
+    const f = frameScene(sc.grid, settings.num('cam.fov'));
+    settings.apply({ 'cam.projection': 'pers', 'cam.target': f.target, 'cam.distance': f.distance, 'cam.orthoSize': f.distance * 0.8, 'cam.yaw': -135, 'cam.pitch': 30 });
+  } else settings.apply(cameraFromSlot(sc.file, Number(slot)));
+}
 
 export const cameraFeature: Feature = {
   id: 'camera',
@@ -12,6 +27,7 @@ export const cameraFeature: Feature = {
       id: 'camera',
       label: 'Camera',
       defs: [
+        { key: 'cam.slot', label: 'File camera', type: 'select', default: 'auto', options: [{ value: 'auto', label: 'Auto frame' }], help: "MagicaVoxel's stored camera slots (0-9)" },
         { key: 'cam.projection', label: 'Projection', type: 'select', default: 'pers', options: [{ value: 'pers', label: 'Perspective' }, { value: 'orth', label: 'Orthographic' }] },
         { key: 'cam.target', label: 'Target', type: 'vec3', default: [0, 0, 0], step: 1 },
         { key: 'cam.yaw', label: 'Yaw', type: 'number', default: -135, min: -180, max: 180, step: 0.5 },
@@ -25,11 +41,16 @@ export const cameraFeature: Feature = {
     },
   ],
   onSceneLoaded(file, grid, settings) {
-    const f = frameScene(grid, settings.num('cam.fov'));
-    settings.apply({ 'cam.target': f.target, 'cam.distance': f.distance, 'cam.orthoSize': f.distance * 0.8 });
-    // A stored camera slot in the file wins over auto-framing.
-    const fromFile = settingsFromVox(file);
-    for (const k of Object.keys(fromFile)) if (k.startsWith('cam.')) settings.set(k, fromFile[k]);
+    scenes.set(settings, { file, grid });
+    const slots = storedCameraSlots(file).filter((id) => Number(file.cameras.find((c) => c.id === id)?.attrs._radius) > 1);
+    const def = settings.def('cam.slot');
+    if (def?.type === 'select') def.options = [{ value: 'auto', label: 'Auto frame' }, ...slots.map((id) => ({ value: String(id), label: `Slot ${id}` }))];
+    if (!watched.has(settings)) {
+      watched.add(settings);
+      settings.onChange((k, v) => { if (k === 'cam.slot') applySlot(settings, String(v)); });
+    }
+    const wanted = settings.str('cam.slot');
+    settings.set('cam.slot', wanted !== 'auto' && slots.includes(Number(wanted)) ? wanted : 'auto');
   },
 };
 
@@ -100,6 +121,6 @@ export const outputFeature: Feature = {
   ],
   onSceneLoaded(file, _grid, settings) {
     const fromFile = settingsFromVox(file);
-    for (const k of Object.keys(fromFile)) if (k.startsWith('post.')) settings.set(k, fromFile[k]);
+    for (const k of Object.keys(fromFile)) if (k.startsWith('post.') || k.startsWith('rt.')) settings.set(k, fromFile[k]);
   },
 };

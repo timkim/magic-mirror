@@ -33,8 +33,8 @@ export function buildMaterialTable(palette: Uint8Array, materials: Map<number, V
     // Older files store metalness in _weight; newer ones use _metal.
     out[o + 6] = type === 1 ? num(m, '_metal', num(m, '_weight', 1)) : num(m, '_metal', 0);
     out[o + 7] = type === 3 ? num(m, '_emit', num(m, '_weight', 1)) : 0;
-    // TODO(match): MagicaVoxel shows IOR as 1 + stored value in some versions; verify.
-    out[o + 8] = num(m, '_ior', 0.3) + 1;
+    // _ri is the real refractive index; _ior stores it minus one.
+    out[o + 8] = num(m, '_ri', num(m, '_ior', 0.3) + 1);
     out[o + 9] = num(m, '_flux', 0);
     out[o + 10] = num(m, '_sp', num(m, '_spec', 0.5));
     out[o + 11] = 0;

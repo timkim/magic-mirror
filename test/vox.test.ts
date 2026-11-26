@@ -66,6 +66,7 @@ describe('parse + scene', () => {
     expect(s['sun.pitch']).toBe(40);
     expect(s['cam.target']).toEqual([1, 2, 3]);
     expect(s['cam.distance']).toBe(50);
-    expect(s['cam.yaw']).toBe(-20);
+    expect(s['cam.yaw']).toBe(-70); // 20 + YAW_OFFSET
+    expect(s['cam.pitch']).toBe(-30);
   });
 });
