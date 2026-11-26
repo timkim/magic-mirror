@@ -117,6 +117,35 @@ const scenes: Record<string, Parameters<typeof writeVox>[0]> = {};
   };
 }
 
+// 5. Fog and media: a cloud of scattering medium, a waxy subsurface blend sphere, a solid
+//    reference sphere, in light fog with the sun low behind them.
+{
+  const cloud: V[] = [];
+  for (let z = 0; z < 14; z++) for (let y = 0; y < 18; y++) for (let x = 0; x < 26; x++) {
+    const dx = (x - 13) / 13, dy = (y - 9) / 9, dz = (z - 7) / 7;
+    if (dx * dx + dy * dy + dz * dz < 1) cloud.push([x, y, z, 14]);
+  }
+  const objs: WriterObject[] = [
+    { name: 'floor', size: [90, 50, 1], voxels: box(90, 50, 1, 1), translation: [0, 0, 0] },
+    { name: 'cloud', size: [26, 18, 14], voxels: cloud, translation: [-24, 0, 16] },
+    { name: 'wax', ...sphere(8, 15), translation: [8, 0, 8] },
+    { name: 'solid', ...sphere(8, 5), translation: [30, 0, 8] },
+  ];
+  scenes['05-fog-media'] = {
+    objects: objs,
+    palette: { ...palette, 14: [245, 245, 250], 15: [255, 210, 170] },
+    materials: {
+      14: { _type: '_media', _media_type: '_scatter', _d: '0.05', _g: '0.3' },
+      15: { _type: '_blend', _media_type: '_sss', _trans: '0.6', _rough: '0.2', _ri: '1.4', _sp: '0.5', _d: '0.1', _g: '0' },
+    },
+    renderObjects: [
+      { _type: '_inf', _i: '1', _k: '255 240 220', _angle: '25 70', _area: '0.05', _disk: '0' },
+      { _type: '_env', _mode: '1' },
+      { _type: '_fog_uni', _d: '0.15', _k: '255 255 255', _g: '0.5' },
+    ],
+  };
+}
+
 mkdirSync('test-scenes', { recursive: true });
 for (const [name, scene] of Object.entries(scenes)) {
   writeFileSync(`test-scenes/${name}.vox`, writeVox(scene));

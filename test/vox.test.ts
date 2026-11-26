@@ -70,3 +70,22 @@ describe('parse + scene', () => {
     expect(s['cam.pitch']).toBe(-30);
   });
 });
+
+describe('SceneBaker', () => {
+  it('matches a full rebuild after moving between frames', async () => {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const path = '/home/claude/vox-in/simcity_v2.vox';
+    const file = existsSync(path)
+      ? parseVox(readFileSync(path))
+      : parseVox(writeVox({ objects: [{ size: [2, 2, 2], voxels: [[0, 0, 0, 1]] }] }));
+    const { SceneBaker } = await import('../src/vox/scene');
+    const baker = new SceneBaker(file, 0);
+    for (const t of [3, 15, 29, 0]) {
+      const dirty = baker.setTime(t);
+      const fresh = new SceneBaker(file, t);
+      expect(Buffer.compare(Buffer.from(baker.grid.cells), Buffer.from(fresh.grid.cells))).toBe(0);
+      expect(baker.grid.voxelCount).toBe(fresh.grid.voxelCount);
+      expect(Array.isArray(dirty)).toBe(true);
+    }
+  });
+});

@@ -24,15 +24,16 @@ struct Params {
   rayleigh: vec4f,    // atmosphere: rgb Rayleigh colour × density; w Mie density
   mie: vec4f,         // rgb Mie colour; w Mie anisotropy g
   env: vec4f,         // x sky mode (0 uniform, 1 atmosphere, 2 HDR), y HDR intensity, z HDR rotation (rad), w atmosphere intensity
-  extra: vec4f,       // x scene radius, y horizon fade, z show sun disk, w unused
+  extra: vec4f,       // x scene radius, y horizon fade, z show sun disk, w fog anisotropy g
   envSample: vec4u,   // x,y size of the sky sampling table; z 1 = importance sampling on
+  fog: vec4f,         // rgb fog colour (scattering albedo); w extinction per voxel (0 = off)
 };
 
 struct Material {
   color: vec4f,  // linear rgb, a = alpha
   a: vec4f,      // x type (0 diffuse, 1 metal, 2 glass, 3 emit, 4 blend, 5 media), y rough, z metal, w emit
   b: vec4f,      // x ior, y flux, z spec, w transparency (0-1)
-  c: vec4f,      // x density, yzw reserved
+  c: vec4f,      // x density, y 1 = scattering medium inside, z phase anisotropy g, w reserved
 };
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -48,6 +49,8 @@ const BRICK = 8;
 const GROUND_ID = 256u;
 const BIG = 1e30;
 const EPS = 1e-3;
+// Density scale for media inside voxels. TODO(match): calibrate against MagicaVoxel's _d.
+const MEDIA_SCALE = 40.0;
 
 // ---------- random numbers ----------
 var<private> rngState: u32;
@@ -184,7 +187,52 @@ fn isClear(m: Material) -> bool {
 // Light absorbed per voxel of travel inside a transparent material (Beer's law).
 // TODO(match): calibrate against MagicaVoxel's _d density.
 fn absorption(m: Material) -> vec3f {
+  if (m.c.y > 0.5) { return vec3f(0.0); } // media scatter instead (see the main loop)
   return (vec3f(1.0) - m.color.rgb) * m.c.x * 40.0;
+}
+
+fn isMedium(m: Material) -> bool { return m.c.y > 0.5; }
+fn mediumSigma(m: Material) -> f32 { return max(m.c.x, 1e-4) * MEDIA_SCALE; }
+
+// Light lost per voxel along a shadow ray inside a material (absorption or scattering out).
+fn shadowExtinction(m: Material) -> vec3f {
+  if (isMedium(m)) { return vec3f(mediumSigma(m)); }
+  return absorption(m);
+}
+
+// ---------- fog and media ----------
+fn phaseHG(cosT: f32, g: f32) -> f32 {
+  let d = 1.0 + g * g - 2.0 * g * cosT;
+  return (1.0 - g * g) / (4.0 * PI * pow(max(d, 1e-4), 1.5));
+}
+
+// New travel direction after scattering, around the current travel direction.
+fn sampleHG(dir: vec3f, g: f32) -> vec3f {
+  if (abs(g) < 1e-3) { return randomUnit(); }
+  let s = (1.0 - g * g) / (1.0 - g + 2.0 * g * rand());
+  let cosT = clamp((1.0 + g * g - s * s) / (2.0 * g), -1.0, 1.0);
+  let sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+  let phi = 2.0 * PI * rand();
+  return normalize(basis(dir) * vec3f(sinT * cos(phi), sinT * sin(phi), cosT));
+}
+
+// Fog fills the scene's box (a little wider than the voxels, down to the ground).
+fn fogInterval(ro: vec3f, rd: vec3f) -> vec2f {
+  let pad = vec3f(vec2f(P.dims.xy) * 0.25, 0.0);
+  let lo = vec3f(P.gridOrigin.xy, min(P.gridOrigin.w, P.gridOrigin.z)) - pad;
+  let hi = P.gridOrigin.xyz + vec3f(P.dims.xyz) + pad + vec3f(0.0, 0.0, f32(P.dims.z) * 0.25);
+  let inv = safeInv(rd);
+  let ta = (lo - ro) * inv; let tb = (hi - ro) * inv;
+  let t0 = max(max(min(ta.x, tb.x), min(ta.y, tb.y)), max(min(ta.z, tb.z), 0.0));
+  let t1 = min(min(max(ta.x, tb.x), max(ta.y, tb.y)), max(ta.z, tb.z));
+  return vec2f(t0, t1);
+}
+
+fn fogTransmittance(ro: vec3f, rd: vec3f, tMax: f32) -> f32 {
+  if (P.fog.w <= 0.0) { return 1.0; }
+  let iv = fogInterval(ro, rd);
+  let len = max(0.0, min(iv.y, tMax) - iv.x);
+  return exp(-P.fog.w * len);
 }
 
 fn fresnel(cosi: f32, eta: f32) -> f32 {
@@ -305,9 +353,10 @@ fn shadowTransmittance(p: vec3f, l: vec3f, startInside: u32) -> vec3f {
   var inside = startInside;
   for (var i = 0; i < 12; i++) {
     let h = traceScene(o, l, inside);
+    if (inside == 0u) { T *= fogTransmittance(o, l, select(BIG, h.t, h.hit)); }
     if (!h.hit) { return T; }
     if (h.id == GROUND_ID) { return vec3f(0.0); }
-    if (inside != 0u) { T *= exp(-absorption(mats[inside]) * h.t); }
+    if (inside != 0u) { T *= exp(-shadowExtinction(mats[inside]) * h.t); }
     if (h.id == 0u) {
       inside = 0u;
     } else {
@@ -322,13 +371,7 @@ fn shadowTransmittance(p: vec3f, l: vec3f, startInside: u32) -> vec3f {
   return T;
 }
 
-fn sunLight(p: vec3f, n: vec3f, inside: u32) -> vec3f {
-  if (P.sunColor.w < 0.5) { return vec3f(0.0); }
-  let l = sampleCone(P.sunDir.xyz, P.sunDir.w);
-  let ndl = dot(n, l);
-  if (ndl <= 0.0) { return vec3f(0.0); }
-  return P.sunColor.rgb * ndl * shadowTransmittance(p, l, inside);
-}
+
 
 fn cameraRay(px: vec2f, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>) {
   let size = vec2f(f32(P.misc.x), f32(P.misc.y));
@@ -364,14 +407,64 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   var radiance = vec3f(0.0);
   var throughput = vec3f(1.0);
-  var inside = 0u;          // id of the clear material the ray is travelling through
+  var inside = 0u;          // id of the clear material or medium the ray is travelling through
   var cameraPath = true;    // still seeing directly through glass from the camera
   var lastDiffusePdf = 0.0; // pdf of the last bounce if it was diffuse (for MIS), else 0
   let maxBounces = P.misc.z;
 
-  for (var bounce = 0u; bounce <= maxBounces + 8u; bounce++) {
+  // Direct light is queued as one shadow ray and traced at the top of the next iteration,
+  // so the whole shader has a single shadow-ray call site (keeps compile times short).
+  var neePending = false;
+  var neeValue = vec3f(0.0);
+  var neeOrigin = vec3f(0.0);
+  var neeDir = vec3f(0.0);
+  var neeInside = 0u;
+  var done = false;
+  var bounce = 0u;
+
+  loop {
+    if (neePending) {
+      radiance += neeValue * shadowTransmittance(neeOrigin, neeDir, neeInside);
+      neePending = false;
+    }
+    if (done || bounce > maxBounces + 8u) { break; }
+    bounce++;
+
     let h = traceScene(ro, rd, inside);
     if (inside != 0u) { throughput *= exp(-absorption(mats[inside]) * min(h.t, 64.0)); }
+
+    // Scattering inside a medium (smoke, clouds, subsurface) or in the fog.
+    var scatterT = BIG;
+    var scatterColor = vec3f(1.0);
+    var scatterG = 0.0;
+    if (inside != 0u && isMedium(mats[inside])) {
+      let m = mats[inside];
+      let tf = -log(max(1.0 - rand(), 1e-7)) / mediumSigma(m);
+      if (tf < h.t) { scatterT = tf; scatterColor = m.color.rgb; scatterG = m.c.z; }
+    } else if (inside == 0u && P.fog.w > 0.0) {
+      let iv = fogInterval(ro, rd);
+      let tEnd = min(iv.y, select(BIG, h.t, h.hit));
+      if (iv.x < tEnd) {
+        let tf = iv.x - log(max(1.0 - rand(), 1e-7)) / P.fog.w;
+        if (tf < tEnd) { scatterT = tf; scatterColor = P.fog.rgb; scatterG = P.extra.w; }
+      }
+    }
+    if (scatterT < BIG) {
+      if (bounce > maxBounces) { done = true; continue; }
+      let p = ro + rd * scatterT;
+      throughput *= scatterColor;
+      if (P.sunColor.w > 0.5) {
+        let l = sampleCone(P.sunDir.xyz, P.sunDir.w);
+        neeValue = throughput * P.sunColor.rgb * phaseHG(dot(rd, l), scatterG);
+        neeOrigin = p; neeDir = l; neeInside = inside; neePending = true;
+      }
+      ro = p;
+      rd = sampleHG(rd, scatterG);
+      cameraPath = false;
+      lastDiffusePdf = 0.0;
+      continue;
+    }
+
     if (!h.hit) {
       var sky = select(skyRadiance(rd), backgroundRadiance(rd), cameraPath);
       // The sky was also sampled directly at the last diffuse bounce: combine the two (MIS).
@@ -380,9 +473,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         sky *= lastDiffusePdf * lastDiffusePdf / (lastDiffusePdf * lastDiffusePdf + e * e);
       }
       radiance += throughput * sky;
-      break;
+      done = true;
+      continue;
     }
     let hp = ro + rd * h.t;
+
+    // Leaving a medium: no surface, just carry on.
+    if (inside != 0u && h.id == 0u && isMedium(mats[inside])) {
+      inside = 0u;
+      ro = hp - h.n * EPS;
+      continue;
+    }
 
     // Leaving a clear material into air.
     if (inside != 0u && h.id == 0u) {
@@ -397,7 +498,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (h.id == GROUND_ID && cameraPath && P.extra.y > 0.0) {
       let r = P.extra.x;
       let fade = smoothstep(r, r * (1.0 + P.extra.y * 40.0), length(hp.xy - (P.gridOrigin.xy + vec2f(P.dims.xy) * 0.5)));
-      if (rand() < fade) { radiance += throughput * backgroundRadiance(rd); break; }
+      if (rand() < fade) { radiance += throughput * backgroundRadiance(rd); done = true; continue; }
     }
 
     var m: Material;
@@ -405,6 +506,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       m.color = vec4f(P.ground.rgb, 1.0); m.a = vec4f(0.0, 1.0, 0.0, 0.0); m.b = vec4f(1.5, 0.0, 0.0, 0.0); m.c = vec4f(0.0);
     } else {
       m = mats[h.id];
+    }
+
+    // Entering a medium: no surface, the ray continues inside and may scatter.
+    if (h.id != GROUND_ID && h.id != inside && isMedium(m) && isClear(m) && rand() < m.b.w) {
+      inside = h.id;
+      ro = hp - h.n * EPS;
+      continue;
     }
 
     // Entering a clear material (glass, or the see-through part of a blend).
@@ -421,7 +529,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       // TODO(match): calibrate emission strength against MagicaVoxel (_emit, _flux, _ldr).
       radiance += throughput * albedo * m.a.w * exp2(m.b.y) * 0.5;
     }
-    if (bounce >= maxBounces) { break; }
+    if (bounce > maxBounces) { done = true; continue; }
     cameraPath = false;
     let p = hp + h.n * EPS;
 
@@ -441,15 +549,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       ro = p; rd = dir;
       lastDiffusePdf = 0.0;
     } else {
-      radiance += throughput * albedo * (1.0 / PI) * sunLight(p, h.n, inside);
-      if (envSampling()) {
+      // Direct light: the sun or the HDR sky (picked at random when both are on).
+      let useSun = P.sunColor.w > 0.5;
+      let useEnv = envSampling();
+      var pickSun = useSun;
+      var weight = 1.0;
+      if (useSun && useEnv) { pickSun = rand() < 0.5; weight = 2.0; }
+      if (pickSun) {
+        let l = sampleCone(P.sunDir.xyz, P.sunDir.w);
+        let ndl = dot(h.n, l);
+        if (ndl > 0.0) {
+          neeValue = throughput * albedo * (1.0 / PI) * P.sunColor.rgb * ndl * weight;
+          neeOrigin = p; neeDir = l; neeInside = inside; neePending = true;
+        }
+      } else if (useEnv) {
         let s = sampleEnv();
         let ndl = dot(h.n, s.xyz);
         if (ndl > 0.0 && s.w > 0.0) {
           let bsdfPdf = ndl / PI;
           let mis = s.w * s.w / (s.w * s.w + bsdfPdf * bsdfPdf);
-          let li = envLookup(s.xyz) * shadowTransmittance(p, s.xyz, inside);
-          radiance += throughput * albedo * (1.0 / PI) * li * ndl / s.w * mis;
+          neeValue = throughput * albedo * (1.0 / PI) * envLookup(s.xyz) * ndl / s.w * mis * weight;
+          neeOrigin = p; neeDir = s.xyz; neeInside = inside; neePending = true;
         }
       }
       throughput *= albedo;
@@ -457,9 +577,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       lastDiffusePdf = max(dot(rd, h.n), 0.0) / PI;
     }
 
-    if (bounce >= 3u) {
+    if (bounce >= 4u) {
       let q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 1.0);
-      if (rand() > q) { break; }
+      if (rand() > q) { done = true; continue; }
       throughput /= q;
     }
   }

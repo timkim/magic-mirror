@@ -59,6 +59,10 @@ export function frameFromSettings(s: Settings, grid: VoxelGrid): FrameParams {
       hdrIntensity: s.num('hdr.intensity'),
       hdrRotation: rad(s.num('hdr.rotation')),
       horizonFade: s.num('ground.horizon'),
+      // TODO(match): MagicaVoxel's fog density units.
+      fogColor: s.vec('fog.color'),
+      fogDensity: s.num('fog.density') * 0.05,
+      fogG: s.num('fog.g'),
       background: bgMode === 'color' ? s.vec('bg.color') : null,
       ground: s.bool('ground.enabled') ? s.vec('ground.color') : null,
       groundHeight: grid.origin[2],

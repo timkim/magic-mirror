@@ -11,7 +11,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "scenes": "tsx tools/make-test-scenes.ts",
-    "render": "tsx tools/render-headless.ts"
+    "render": "esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/render-headless.ts --outfile=.build/render.mjs && node .build/render.mjs",
+    "farm": "esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/coordinator.ts --outfile=.build/coordinator.mjs && node .build/coordinator.mjs",
+    "worker": "esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/render-headless.ts --outfile=.build/render.mjs && esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/worker.ts --outfile=.build/worker.mjs && node .build/worker.mjs",
+    "inspect": "esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/inspect-vox.ts --outfile=.build/inspect.mjs && node .build/inspect.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -22,6 +25,6 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
-    "webgpu": "^0.3.0"
+    "webgpu": "^0.6.2"
   }
 }

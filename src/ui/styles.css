@@ -117,3 +117,7 @@ button:hover, select:hover { border-color: var(--accent); }
 .mm-timeline label { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .mm-timeline input[type='number'] { width: 56px; }
 .mm-timeline button.active { border-color: var(--accent); color: var(--accent); }
+
+.mm-url { width: 100%; font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.mm-farm-status { font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.mm-farm-status a { color: var(--accent); }

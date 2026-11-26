@@ -64,6 +64,13 @@ export function settingsFromVox(file: VoxFile): Record<string, SettingValue> {
     const a = nums(ibl._angle);
     if (a.length) out['hdr.rotation'] = a[0];
   }
+  const fog = renderObject(file, '_fog_uni');
+  if (fog) {
+    setNum('fog.density', fog._d);
+    setNum('fog.g', fog._g);
+    const c = colour(fog._k);
+    if (c) out['fog.color'] = c;
+  }
   const bloom = renderObject(file, '_bloom');
   if (bloom) {
     setNum('bloom.mix', bloom._mix);

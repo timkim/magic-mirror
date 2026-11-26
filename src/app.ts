@@ -8,11 +8,15 @@ import { buildSettingsPanels } from './ui/settingsPanel';
 import { Renderer } from './render/renderer';
 import { frameFromSettings, outputSize, postFromSettings } from './render/params';
 import { readPixels } from './render/readback';
+import { loadHdrEnvironment } from './render/hdr';
 import { parseVox } from './vox/parser';
-import { buildVoxelGrid, type VoxelGrid } from './vox/scene';
+import { SceneBaker, type VoxelGrid } from './vox/scene';
 import type { VoxFile } from './vox/types';
 
-type Events = { sceneLoaded: (file: VoxFile, grid: VoxelGrid, name: string) => void };
+type Events = {
+  sceneLoaded: (file: VoxFile, grid: VoxelGrid, name: string) => void;
+  environmentLoaded: (name: string) => void;
+};
 
 export interface FileHandler {
   /** Return true if this handler takes the dropped/opened file. */
@@ -27,10 +31,15 @@ export class App {
   readonly canvas: HTMLCanvasElement;
   file: VoxFile | null = null;
   fileName = '';
+  /** The original bytes of the open .vox (sent to render farm workers). */
+  fileBytes: Uint8Array | null = null;
+  /** The loaded HDR sky image, if any. */
+  environment: { name: string; bytes: Uint8Array } | null = null;
   grid: VoxelGrid | null = null;
+  private baker: SceneBaker | null = null;
   private context: GPUCanvasContext;
   private frameDirty = true;
-  private listeners: { [K in keyof Events]: Events[K][] } = { sceneLoaded: [] };
+  private listeners: { [K in keyof Events]: Events[K][] } = { sceneLoaded: [], environmentLoaded: [] };
   private fileHandlers: FileHandler[] = [];
   private lastTime = performance.now();
   private sampleTimer = { samples: 0, since: performance.now(), rate: 0 };
@@ -99,7 +108,9 @@ export class App {
     const file = parseVox(bytes);
     this.file = file;
     this.fileName = name;
-    this.grid = buildVoxelGrid(file, this.settings.num('anim.frame'));
+    this.fileBytes = bytes;
+    this.baker = new SceneBaker(file, this.settings.num('anim.frame'));
+    this.grid = this.baker.grid;
     for (const f of this.features) f.onSceneLoaded?.(file, this.grid, this.settings);
     this.renderer.setScene(this.grid, file.palette, file.materials);
     this.frameDirty = true;
@@ -109,10 +120,18 @@ export class App {
   }
 
   private rebuildGrid() {
-    if (!this.file) return;
-    this.grid = buildVoxelGrid(this.file, this.settings.num('anim.frame'));
-    this.renderer.setScene(this.grid, this.file.palette, this.file.materials);
+    if (!this.baker) return;
+    this.renderer.updateRegions(this.baker.setTime(this.settings.num('anim.frame')));
     this.frameDirty = true;
+  }
+
+  /** Light the scene with an equirectangular .hdr image. */
+  loadEnvironment(bytes: Uint8Array, name: string) {
+    this.renderer.setEnvironment(loadHdrEnvironment(bytes));
+    this.environment = { name, bytes };
+    this.settings.set('sky.mode', 'hdr');
+    this.frameDirty = true;
+    for (const cb of this.listeners.environmentLoaded) cb(name);
   }
 
   /** Restart progressive rendering (e.g. after something outside the settings changed). */

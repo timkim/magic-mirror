@@ -6,9 +6,10 @@ import { compareFeature } from './features/compare';
 import { sceneInfoFeature } from './features/sceneInfo';
 import { environmentFeature } from './features/environment';
 import { timelineFeature } from './features/timeline';
+import { farmFeature } from './features/farm';
 
 // Order matters only for toolbar and panel placement.
-const features = [...coreFeatures, sceneInfoFeature, viewportFeature, environmentFeature, compareFeature, timelineFeature];
+const features = [...coreFeatures, sceneInfoFeature, viewportFeature, environmentFeature, compareFeature, timelineFeature, farmFeature];
 
 const root = document.getElementById('app')!;
 App.create(root, features)

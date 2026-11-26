@@ -5,7 +5,7 @@ import { PATHTRACE_WGSL } from './shaders/pathtrace.wgsl';
 import { PRESENT_WGSL } from './shaders/present.wgsl';
 import { BLOOM_WGSL } from './shaders/bloom.wgsl';
 import { buildMaterialTable } from './materials';
-import type { VoxelGrid } from '../vox/scene';
+import type { GridBox, VoxelGrid } from '../vox/scene';
 import type { VoxDict } from '../vox/types';
 
 export type Vec3 = [number, number, number];
@@ -43,6 +43,9 @@ export interface LightingParams {
   ground: Vec3 | null; // null = no ground plane
   groundHeight: number;
   horizonFade: number; // 0 = ground runs to the horizon
+  fogColor: Vec3;
+  fogDensity: number; // extinction per voxel; 0 = no fog
+  fogG: number;
 }
 
 export interface PostParams {
@@ -63,7 +66,7 @@ export interface FrameParams {
 }
 
 const BRICK = 8;
-const PARAMS_BYTES = 17 * 16;
+const PARAMS_BYTES = 18 * 16;
 
 export class Renderer {
   readonly device: GPUDevice;
@@ -89,6 +92,7 @@ export class Renderer {
   private presentGroup: GPUBindGroup | null = null;
   private bloomGroups: GPUBindGroup[] = [];
   private grid: VoxelGrid | null = null;
+  private bricks: Uint8Array | null = null;
   private frame: FrameParams | null = null;
   private staging: GPUBuffer[] = [];
   hasEnvironment = false;
@@ -155,11 +159,52 @@ export class Renderer {
         const brow = bx * ((y >> 3) + by * (z >> 3));
         for (let x = 0; x < dx; x++) if (grid.cells[row + x]) bricks[brow + (x >> 3)] = 1;
       }
+    this.bricks = bricks;
     this.brickTex = d.createTexture({ size: [bx, by, bz], dimension: '3d', format: 'r8uint', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     d.queue.writeTexture({ texture: this.brickTex }, bricks, { bytesPerRow: bx, rowsPerImage: by }, [bx, by, bz]);
 
     d.queue.writeBuffer(this.materials, 0, buildMaterialTable(palette, materials) as Float32Array<ArrayBuffer>);
     this.rebind();
+    this.reset();
+  }
+
+  /**
+   * Re-upload only the changed parts of the grid set with setScene (same grid object,
+   * e.g. after SceneBaker.setTime). Much faster than setScene for animation.
+   */
+  updateRegions(boxes: GridBox[]) {
+    const g = this.grid, d = this.device;
+    if (!g || !this.voxelTex || !this.brickTex || !this.bricks || boxes.length === 0) return;
+    const [dx, dy] = g.dims;
+    const bx = Math.ceil(g.dims[0] / BRICK), by = Math.ceil(g.dims[1] / BRICK);
+    for (const b of boxes) {
+      const sx = b.max[0] - b.min[0] + 1, sy = b.max[1] - b.min[1] + 1, sz = b.max[2] - b.min[2] + 1;
+      const sub = new Uint8Array(sx * sy * sz);
+      for (let z = 0; z < sz; z++)
+        for (let y = 0; y < sy; y++) {
+          const src = b.min[0] + dx * (b.min[1] + y + dy * (b.min[2] + z));
+          sub.set(g.cells.subarray(src, src + sx), sx * (y + sy * z));
+        }
+      d.queue.writeTexture({ texture: this.voxelTex, origin: b.min }, sub, { bytesPerRow: sx, rowsPerImage: sy }, [sx, sy, sz]);
+
+      // Recompute the bricks this box touches.
+      const lo = b.min.map((v) => v >> 3), hi = b.max.map((v) => v >> 3);
+      const bsx = hi[0] - lo[0] + 1, bsy = hi[1] - lo[1] + 1, bsz = hi[2] - lo[2] + 1;
+      const bsub = new Uint8Array(bsx * bsy * bsz);
+      for (let k = lo[2]; k <= hi[2]; k++)
+        for (let j = lo[1]; j <= hi[1]; j++)
+          for (let i = lo[0]; i <= hi[0]; i++) {
+            let occ = 0;
+            for (let z = k * BRICK; z < Math.min((k + 1) * BRICK, g.dims[2]) && !occ; z++)
+              for (let y = j * BRICK; y < Math.min((j + 1) * BRICK, dy) && !occ; y++) {
+                const row = dx * (y + dy * z);
+                for (let x = i * BRICK; x < Math.min((i + 1) * BRICK, dx); x++) if (g.cells[row + x]) { occ = 1; break; }
+              }
+            this.bricks[i + bx * (j + by * k)] = occ;
+            bsub[(i - lo[0]) + bsx * ((j - lo[1]) + bsy * (k - lo[2]))] = occ;
+          }
+      d.queue.writeTexture({ texture: this.brickTex, origin: lo as [number, number, number] }, bsub, { bytesPerRow: bsx, rowsPerImage: bsy }, [bsx, bsy, bsz]);
+    }
     this.reset();
   }
 
@@ -295,8 +340,9 @@ export class Renderer {
     // HDR mode without an image loaded falls back to the atmosphere.
     const mode = l.skyMode === 'hdr' ? (this.hasEnvironment ? 2 : 1) : l.skyMode === 'atmosphere' ? 1 : 0;
     fv.set([mode, l.hdrIntensity, l.hdrRotation, l.atmosphereIntensity], 56);
-    fv.set([Math.hypot(g.dims[0], g.dims[1]) / 2, l.horizonFade, l.sunDisk ? 1 : 0, 0], 60);
+    fv.set([Math.hypot(g.dims[0], g.dims[1]) / 2, l.horizonFade, l.sunDisk ? 1 : 0, l.fogG], 60);
     uv.set([this.envSampleSize[0], this.envSampleSize[1], this.envSampleSize[0] > 0 ? 1 : 0, 0], 64);
+    put(17, l.fogColor, l.fogDensity);
     this.device.queue.writeBuffer(target, 0, buf);
   }
 

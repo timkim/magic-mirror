@@ -93,19 +93,22 @@ export const lightingFeature: Feature = {
     },
     {
       id: 'ground',
-      label: 'Background & ground',
+      label: 'Background, ground & fog',
       defs: [
         { key: 'bg.mode', label: 'Background', type: 'select', default: 'color', options: [{ value: 'sky', label: 'Sky' }, { value: 'color', label: 'Colour' }] },
         { key: 'bg.color', label: 'Background colour', type: 'color', default: [0.55, 0.55, 0.55] },
         { key: 'ground.enabled', label: 'Ground', type: 'bool', default: true },
         { key: 'ground.color', label: 'Ground colour', type: 'color', default: [0.8, 0.8, 0.8] },
+        { key: 'fog.density', label: 'Fog density', type: 'number', default: 0, min: 0, max: 1, step: 0.005 },
+        { key: 'fog.color', label: 'Fog colour', type: 'color', default: [1, 1, 1] },
+        { key: 'fog.g', label: 'Fog glow', type: 'number', default: 0, min: -0.9, max: 0.9, step: 0.01, help: 'Positive values scatter light forwards (glow around the sun)' },
         { key: 'ground.horizon', label: 'Horizon fade', type: 'number', default: 0, min: 0, max: 1, step: 0.01, help: 'Fade the ground into the background with distance' },
       ],
     },
   ],
   onSceneLoaded(file, _grid, settings) {
     const fromFile = settingsFromVox(file);
-    for (const k of Object.keys(fromFile)) if (/^(sun|sky|bg|ground|atm|hdr)\./.test(k)) settings.set(k, fromFile[k]);
+    for (const k of Object.keys(fromFile)) if (/^(sun|sky|bg|ground|atm|hdr|fog)\./.test(k)) settings.set(k, fromFile[k]);
   },
 };
 

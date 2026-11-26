@@ -10,7 +10,7 @@ import { dirname } from 'node:path';
 import { PNG } from 'pngjs';
 import { create, globals } from 'webgpu';
 import { parseVox } from '../src/vox/parser';
-import { buildVoxelGrid } from '../src/vox/scene';
+import { SceneBaker } from '../src/vox/scene';
 import { Renderer } from '../src/render/renderer';
 import { frameFromSettings, outputSize, postFromSettings } from '../src/render/params';
 import { readPixels } from '../src/render/readback';
@@ -24,20 +24,22 @@ function parseArgs(argv: string[]) {
   let samples = 128, frame = 0;
   let hdr: string | undefined;
   let frames: [number, number] | undefined;
+  let settingsFile: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--samples') samples = Number(argv[++i]);
     else if (a === '--frame') frame = Number(argv[++i]);
     else if (a === '--hdr') hdr = argv[++i];
+    else if (a === '--settings') settingsFile = argv[++i];
     else if (a === '--frames') { const [x, y] = argv[++i].split('-').map(Number); frames = [x, Number.isFinite(y) ? y : x]; }
     else if (a === '--set') { const [k, ...v] = argv[++i].split('='); sets[k] = v.join('='); }
     else pos.push(a);
   }
   if (pos.length < 2) {
-    console.error('usage: render-headless <in.vox> <out.png> [--samples N] [--frame N | --frames A-B] [--hdr sky.hdr] [--set key=value]');
+    console.error('usage: render-headless <in.vox> <out.png> [--samples N] [--frame N | --frames A-B] [--hdr sky.hdr] [--settings snapshot.json] [--set key=value]');
     process.exit(1);
   }
-  return { input: pos[0], output: pos[1], samples, frame, sets, hdr, frames };
+  return { input: pos[0], output: pos[1], samples, frame, sets, hdr, frames, settingsFile };
 }
 
 /** frames/city_####.png → frames/city_0007.png; without #### the number goes before .png */
@@ -57,8 +59,11 @@ export async function main() {
   const file = parseVox(readFileSync(args.input));
   const settings = createSettings(coreFeatures);
   settings.set('anim.frame', args.frame);
-  const grid = buildVoxelGrid(file, args.frame);
+  const baker = new SceneBaker(file, args.frames?.[0] ?? args.frame);
+  const grid = baker.grid;
   for (const f of coreFeatures) f.onSceneLoaded?.(file, grid, settings);
+  // A full settings snapshot (e.g. from the app or a farm job) is applied before any --set.
+  if (args.settingsFile) settings.apply(JSON.parse(readFileSync(args.settingsFile, 'utf8')));
   for (const [k, v] of Object.entries(args.sets)) {
     const def = settings.def(k);
     if (!def) { console.warn(`unknown setting ${k}`); continue; }
@@ -83,8 +88,9 @@ export async function main() {
   const [first, last] = args.frames ?? [args.frame, args.frame];
   for (let f = first; f <= last; f++) {
     const t0 = performance.now();
-    const g = f === args.frame ? grid : buildVoxelGrid(file, f);
-    renderer.setScene(g, file.palette, file.materials);
+    const g = grid;
+    if (f === first) renderer.setScene(g, file.palette, file.materials);
+    else renderer.updateRegions(baker.setTime(f));
     renderer.setFrame(frameFromSettings(settings, g));
     const batch = 8;
     for (let done = 0; done < args.samples; done += batch) {
@@ -105,4 +111,4 @@ export async function main() {
   device.destroy();
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

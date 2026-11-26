@@ -38,9 +38,13 @@ export function buildMaterialTable(palette: Uint8Array, materials: Map<number, V
     out[o + 9] = num(m, '_flux', 0);
     out[o + 10] = num(m, '_sp', num(m, '_spec', 0.5));
     // How see-through the surface is: glass defaults to clear, blend to opaque.
-    out[o + 11] = type === 2 ? num(m, '_trans', num(m, '_alpha', 1)) : type === 4 || type === 5 ? num(m, '_trans', num(m, '_alpha', 0)) : 0;
-    out[o + 12] = num(m, '_d', 0); // absorption density inside clear materials
-    // 13-15 reserved
+    // Media (_media/_cloud) are entered every time; blend uses its _trans.
+    out[o + 11] = type === 2 ? num(m, '_trans', num(m, '_alpha', 1)) : type === 5 ? 1 : type === 4 ? num(m, '_trans', num(m, '_alpha', 0)) : 0;
+    out[o + 12] = num(m, '_d', 0); // density: absorption in glass, scattering in media
+    // Scattering medium inside the voxels: media types, or blend with a _media_type (e.g. _sss).
+    out[o + 13] = type === 5 || (type === 4 && m?._media_type !== undefined) ? 1 : 0;
+    out[o + 14] = num(m, '_g', 0); // phase anisotropy
+    out[o + 15] = 0;
   }
   return out;
 }
