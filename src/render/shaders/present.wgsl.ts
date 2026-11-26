@@ -1,18 +1,20 @@
-// Turns the accumulated radiance into display pixels: average, exposure, tone map, sRGB.
-// Post effects (bloom, vignette) slot in here.
+// Turns the accumulated radiance into display pixels: average, exposure, bloom, vignette,
+// tone map, gamma.
 
 export const PRESENT_WGSL = /* wgsl */ `
 struct Post {
   size: vec2u,
   samples: f32,
-  exposure: f32,   // linear multiplier (2^EV)
+  exposure: f32,   // linear multiplier
   tonemap: u32,    // 0 none, 1 ACES, 2 Reinhard
   gamma: f32,
   vignette: f32,
-  pad: f32,
+  bloomMix: f32,
 };
 @group(0) @binding(0) var<uniform> post: Post;
 @group(0) @binding(1) var<storage, read> accum: array<vec4f>;
+@group(0) @binding(2) var bloomTex: texture_2d<f32>;
+@group(0) @binding(3) var bloomSampler: sampler;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -30,9 +32,14 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let px = vec2u(pos.xy);
   let i = min(px.y, post.size.y - 1u) * post.size.x + min(px.x, post.size.x - 1u);
   var c = accum[i].rgb / max(post.samples, 1.0) * post.exposure;
+  let uv = pos.xy / vec2f(post.size);
+  let bloom = textureSampleLevel(bloomTex, bloomSampler, uv, 0.0).rgb;
+  if (post.bloomMix > 0.0) {
+    // TODO(match): MagicaVoxel may add bloom rather than blend it.
+    c = mix(c, bloom, post.bloomMix);
+  }
   if (post.vignette > 0.0) {
-    let uv = pos.xy / vec2f(post.size) - 0.5;
-    c *= mix(1.0, smoothstep(0.85, 0.2, length(uv)), post.vignette);
+    c *= mix(1.0, smoothstep(0.85, 0.2, length(uv - 0.5)), post.vignette);
   }
   if (post.tonemap == 1u) { c = aces(c); }
   else if (post.tonemap == 2u) { c = c / (1.0 + c); }

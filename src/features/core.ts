@@ -58,8 +58,8 @@ export const lightingFeature: Feature = {
   id: 'lighting',
   settings: [
     {
-      id: 'lighting',
-      label: 'Lighting',
+      id: 'sun',
+      label: 'Sun',
       defs: [
         { key: 'sun.enabled', label: 'Sun', type: 'bool', default: true },
         { key: 'sun.intensity', label: 'Sun intensity', type: 'number', default: 0.7, min: 0, max: 10, step: 0.01 },
@@ -67,18 +67,45 @@ export const lightingFeature: Feature = {
         { key: 'sun.yaw', label: 'Sun yaw', type: 'number', default: 50, min: -180, max: 180, step: 0.5 },
         { key: 'sun.pitch', label: 'Sun pitch', type: 'number', default: 50, min: -90, max: 90, step: 0.5 },
         { key: 'sun.size', label: 'Sun size', type: 'number', default: 3, min: 0, max: 30, step: 0.1, help: 'Angular diameter in degrees; larger = softer shadows' },
+        { key: 'sun.disk', label: 'Sun disk', type: 'bool', default: false, help: 'Show the sun in the sky' },
+      ],
+    },
+    {
+      id: 'sky',
+      label: 'Sky',
+      defs: [
+        {
+          key: 'sky.mode', label: 'Sky', type: 'select', default: 'atmosphere',
+          options: [{ value: 'uniform', label: 'Uniform colour' }, { value: 'atmosphere', label: 'Atmosphere' }, { value: 'hdr', label: 'HDR image' }],
+          help: 'HDR image falls back to Atmosphere until an .hdr file is loaded',
+        },
         { key: 'sky.intensity', label: 'Sky intensity', type: 'number', default: 0.6, min: 0, max: 10, step: 0.01 },
         { key: 'sky.color', label: 'Sky colour', type: 'color', default: [1, 1, 1] },
+        { key: 'atm.intensity', label: 'Atmosphere brightness', type: 'number', default: 1, min: 0, max: 10, step: 0.01 },
+        { key: 'atm.rayleighDensity', label: 'Rayleigh density', type: 'number', default: 0.2, min: 0, max: 2, step: 0.01 },
+        { key: 'atm.rayleighColor', label: 'Rayleigh colour', type: 'color', default: [0.24, 0.45, 1] },
+        { key: 'atm.mieDensity', label: 'Mie (haze) density', type: 'number', default: 0.3, min: 0, max: 2, step: 0.01 },
+        { key: 'atm.mieColor', label: 'Mie colour', type: 'color', default: [1, 1, 1] },
+        { key: 'atm.mieG', label: 'Mie glow size', type: 'number', default: 0.8, min: 0, max: 0.99, step: 0.01, help: 'Anisotropy: higher = tighter glow around the sun' },
+        { key: 'hdr.intensity', label: 'HDR intensity', type: 'number', default: 1, min: 0, max: 10, step: 0.01 },
+        { key: 'hdr.rotation', label: 'HDR rotation', type: 'number', default: 0, min: -180, max: 180, step: 0.5 },
+      ],
+    },
+    {
+      id: 'ground',
+      label: 'Background & ground',
+      defs: [
         { key: 'bg.mode', label: 'Background', type: 'select', default: 'color', options: [{ value: 'sky', label: 'Sky' }, { value: 'color', label: 'Colour' }] },
         { key: 'bg.color', label: 'Background colour', type: 'color', default: [0.55, 0.55, 0.55] },
         { key: 'ground.enabled', label: 'Ground', type: 'bool', default: true },
         { key: 'ground.color', label: 'Ground colour', type: 'color', default: [0.8, 0.8, 0.8] },
+        { key: 'ground.horizon', label: 'Horizon fade', type: 'number', default: 0, min: 0, max: 1, step: 0.01, help: 'Fade the ground into the background with distance' },
       ],
     },
   ],
   onSceneLoaded(file, _grid, settings) {
     const fromFile = settingsFromVox(file);
-    for (const k of Object.keys(fromFile)) if (/^(sun|sky|bg|ground)\./.test(k)) settings.set(k, fromFile[k]);
+    for (const k of Object.keys(fromFile)) if (/^(sun|sky|bg|ground|atm|hdr)\./.test(k)) settings.set(k, fromFile[k]);
   },
 };
 
@@ -105,7 +132,18 @@ export const outputFeature: Feature = {
         { key: 'rt.bounces', label: 'Bounces', type: 'number', default: 6, min: 1, max: 32, step: 1 },
         { key: 'rt.samplesPerFrame', label: 'Samples per frame', type: 'number', default: 2, min: 1, max: 32, step: 1, resetsRender: false },
         { key: 'rt.maxSamples', label: 'Stop after samples', type: 'number', default: 1024, min: 1, max: 65536, step: 1, resetsRender: false },
-        { key: 'anim.frame', label: 'Animation frame', type: 'number', default: 0, min: 0, max: 1000, step: 1 },
+      ],
+    },
+    {
+      id: 'animation',
+      label: 'Animation',
+      hidden: true, // edited through the timeline strip
+      defs: [
+        { key: 'anim.frame', label: 'Frame', type: 'number', default: 0, min: 0, max: 1000, step: 1 },
+        { key: 'anim.fps', label: 'FPS', type: 'number', default: 12, min: 1, max: 60, step: 1, resetsRender: false },
+        { key: 'anim.playSamples', label: 'Samples while playing', type: 'number', default: 4, min: 1, max: 4096, step: 1, resetsRender: false },
+        { key: 'anim.loop', label: 'Loop', type: 'bool', default: true, resetsRender: false },
+        { key: 'anim.exportSamples', label: 'Samples per exported frame', type: 'number', default: 256, min: 1, max: 65536, step: 1, resetsRender: false },
       ],
     },
     {
@@ -116,11 +154,15 @@ export const outputFeature: Feature = {
         { key: 'post.tonemap', label: 'Tone mapping', type: 'select', default: 'aces', resetsRender: false, options: [{ value: 'aces', label: 'ACES' }, { value: 'reinhard', label: 'Reinhard' }, { value: 'none', label: 'None (clip)' }] },
         { key: 'post.gamma', label: 'Gamma', type: 'number', default: 2.2, min: 1, max: 3, step: 0.01, resetsRender: false },
         { key: 'post.vignette', label: 'Vignette', type: 'number', default: 0, min: 0, max: 1, step: 0.01, resetsRender: false },
+        { key: 'bloom.mix', label: 'Bloom', type: 'number', default: 0, min: 0, max: 1, step: 0.01, resetsRender: false },
+        { key: 'bloom.scale', label: 'Bloom size', type: 'number', default: 0.4, min: 0, max: 1, step: 0.01, resetsRender: false },
+        { key: 'bloom.aspect', label: 'Bloom stretch', type: 'number', default: 0.5, min: 0, max: 1, step: 0.01, resetsRender: false, help: '0.5 = round, higher = wider' },
+        { key: 'bloom.threshold', label: 'Bloom threshold', type: 'number', default: 0, min: 0, max: 4, step: 0.01, resetsRender: false },
       ],
     },
   ],
   onSceneLoaded(file, _grid, settings) {
     const fromFile = settingsFromVox(file);
-    for (const k of Object.keys(fromFile)) if (k.startsWith('post.') || k.startsWith('rt.')) settings.set(k, fromFile[k]);
+    for (const k of Object.keys(fromFile)) if (/^(post|rt|bloom)\./.test(k)) settings.set(k, fromFile[k]);
   },
 };

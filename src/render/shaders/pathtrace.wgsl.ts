@@ -1,6 +1,11 @@
 // Progressive voxel path tracer. One sample per pixel per dispatch, summed into `accum`.
-// Acceleration: a coarse 8×8×8 "brick" occupancy grid lets rays skip empty space,
-// then a fine DDA walks the voxels inside occupied bricks.
+//
+// Traversal: a coarse 8×8×8 "brick" occupancy grid lets rays skip empty space, then a fine
+// DDA walks voxels inside occupied bricks. Rays travelling inside glass use the same walk
+// but stop at the first voxel that isn't the glass they are in (that's the exit surface).
+//
+// Lighting: sun (sampled directly, with soft shadows that pass through glass), plus a sky
+// that is uniform, an analytic atmosphere, or an HDR environment image.
 
 export const PATHTRACE_WGSL = /* wgsl */ `
 struct Params {
@@ -10,18 +15,24 @@ struct Params {
   camUp: vec4f,       // w: 0 perspective, 1 orthographic
   sunDir: vec4f,      // direction towards the sun; w: cos(angular radius)
   sunColor: vec4f,    // rgb irradiance; w: 1 enabled
-  skyColor: vec4f,    // rgb radiance
+  skyColor: vec4f,    // rgb radiance of the uniform sky
   bgColor: vec4f,     // rgb; w: 1 = camera rays that miss show this instead of the sky
   ground: vec4f,      // rgb albedo; w: 1 enabled
   gridOrigin: vec4f,  // world position of voxel (0,0,0); w: ground height (world z)
   dims: vec4u,        // grid size; w: sample index
   misc: vec4u,        // x width, y height, z max bounces, w seed
+  rayleigh: vec4f,    // atmosphere: rgb Rayleigh colour × density; w Mie density
+  mie: vec4f,         // rgb Mie colour; w Mie anisotropy g
+  env: vec4f,         // x sky mode (0 uniform, 1 atmosphere, 2 HDR), y HDR intensity, z HDR rotation (rad), w atmosphere intensity
+  extra: vec4f,       // x scene radius, y horizon fade, z show sun disk, w unused
+  envSample: vec4u,   // x,y size of the sky sampling table; z 1 = importance sampling on
 };
 
 struct Material {
   color: vec4f,  // linear rgb, a = alpha
   a: vec4f,      // x type (0 diffuse, 1 metal, 2 glass, 3 emit, 4 blend, 5 media), y rough, z metal, w emit
-  b: vec4f,      // x ior, y flux, z spec, w reserved
+  b: vec4f,      // x ior, y flux, z spec, w transparency (0-1)
+  c: vec4f,      // x density, yzw reserved
 };
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -29,11 +40,14 @@ struct Material {
 @group(0) @binding(2) var bricks: texture_3d<u32>;
 @group(0) @binding(3) var<storage, read> mats: array<Material, 256>;
 @group(0) @binding(4) var<storage, read_write> accum: array<vec4f>;
+@group(0) @binding(5) var envTex: texture_2d<f32>;
+@group(0) @binding(6) var<storage, read> envTable: array<f32>;
 
 const PI = 3.14159265359;
 const BRICK = 8;
 const GROUND_ID = 256u;
 const BIG = 1e30;
+const EPS = 1e-3;
 
 // ---------- random numbers ----------
 var<private> rngState: u32;
@@ -79,13 +93,15 @@ fn randomUnit() -> vec3f {
 }
 
 // ---------- voxel traversal ----------
+// A hit is the first cell whose id differs from \`inside\` (0 = travelling through air).
+// n points back towards the ray's origin, across the face that was crossed.
 struct Hit { t: f32, n: vec3f, id: u32, hit: bool };
 
 fn safeInv(d: vec3f) -> vec3f {
   return 1.0 / select(d, vec3f(1e-9), abs(d) < vec3f(1e-9));
 }
 
-fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd: f32, n0: vec3f) -> Hit {
+fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd: f32, n0: vec3f, inside: u32) -> Hit {
   var h: Hit; h.hit = false;
   let lo = bcell * BRICK;
   let hi = min(lo + vec3i(BRICK), vec3i(P.dims.xyz)) - vec3i(1);
@@ -99,7 +115,7 @@ fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd:
   for (var i = 0; i < 32; i++) {
     if (any(v < lo) || any(v > hi) || t > tEnd) { break; }
     let id = textureLoad(voxels, v, 0).r;
-    if (id != 0u) { h.hit = true; h.t = t; h.n = n; h.id = id; return h; }
+    if (id != inside) { h.hit = true; h.t = t; h.n = n; h.id = id; return h; }
     if (tNext.x < tNext.y && tNext.x < tNext.z) { v.x += st.x; t = tNext.x; tNext.x += tDelta.x; n = vec3f(-stepf.x, 0.0, 0.0); }
     else if (tNext.y < tNext.z) { v.y += st.y; t = tNext.y; tNext.y += tDelta.y; n = vec3f(0.0, -stepf.y, 0.0); }
     else { v.z += st.z; t = tNext.z; tNext.z += tDelta.z; n = vec3f(0.0, 0.0, -stepf.z); }
@@ -108,7 +124,7 @@ fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd:
 }
 
 // ro is in grid space (world minus gridOrigin).
-fn traceGrid(ro: vec3f, rd: vec3f, tLimit: f32) -> Hit {
+fn traceGrid(ro: vec3f, rd: vec3f, tLimit: f32, inside: u32) -> Hit {
   var h: Hit; h.hit = false; h.t = tLimit;
   let dims = vec3f(P.dims.xyz);
   let inv = safeInv(rd);
@@ -136,8 +152,9 @@ fn traceGrid(ro: vec3f, rd: vec3f, tLimit: f32) -> Hit {
   for (var i = 0; i < 1024; i++) {
     if (any(cell < vec3i(0)) || any(cell >= bdims) || t > tExit || t > tLimit) { break; }
     let tCellExit = min(min(tNext.x, tNext.y), tNext.z);
-    if (textureLoad(bricks, cell, 0).r != 0u) {
-      let r = traceBrick(ro, rd, safeInv(rd), cell, t, min(tCellExit, tExit), n);
+    // Inside glass every brick must be walked: an empty brick is where the glass ends.
+    if (inside != 0u || textureLoad(bricks, cell, 0).r != 0u) {
+      let r = traceBrick(ro, rd, inv, cell, t, min(tCellExit, tExit), n, inside);
       if (r.hit && r.t < tLimit) { return r; }
     }
     if (tNext.x < tNext.y && tNext.x < tNext.z) { cell.x += st.x; t = tNext.x; tNext.x += tDelta.x; n = vec3f(-stepf.x, 0.0, 0.0); }
@@ -148,9 +165,9 @@ fn traceGrid(ro: vec3f, rd: vec3f, tLimit: f32) -> Hit {
 }
 
 // World-space scene query: voxels plus the optional ground plane.
-fn traceScene(ro: vec3f, rd: vec3f) -> Hit {
-  var h = traceGrid(ro - P.gridOrigin.xyz, rd, BIG);
-  if (P.ground.w > 0.5 && rd.z < 0.0) {
+fn traceScene(ro: vec3f, rd: vec3f, inside: u32) -> Hit {
+  var h = traceGrid(ro - P.gridOrigin.xyz, rd, BIG, inside);
+  if (inside == 0u && P.ground.w > 0.5 && rd.z < 0.0) {
     let tg = (P.gridOrigin.w - ro.z) / rd.z;
     if (tg > 0.0 && (!h.hit || tg < h.t)) {
       h.hit = true; h.t = tg; h.n = vec3f(0.0, 0.0, 1.0); h.id = GROUND_ID;
@@ -159,22 +176,158 @@ fn traceScene(ro: vec3f, rd: vec3f) -> Hit {
   return h;
 }
 
-fn occluded(ro: vec3f, rd: vec3f) -> bool {
-  return traceScene(ro, rd).hit;
+// ---------- materials ----------
+fn isClear(m: Material) -> bool {
+  return m.b.w > 0.0 && (m.a.x == 2.0 || m.a.x == 4.0 || m.a.x == 5.0);
+}
+
+// Light absorbed per voxel of travel inside a transparent material (Beer's law).
+// TODO(match): calibrate against MagicaVoxel's _d density.
+fn absorption(m: Material) -> vec3f {
+  return (vec3f(1.0) - m.color.rgb) * m.c.x * 40.0;
+}
+
+fn fresnel(cosi: f32, eta: f32) -> f32 {
+  let r0 = (1.0 - eta) / (1.0 + eta);
+  let f0 = r0 * r0;
+  return f0 + (1.0 - f0) * pow(1.0 - clamp(cosi, 0.0, 1.0), 5.0);
+}
+
+// Reflect or refract at an interface. nf faces the incoming ray; eta = n_from / n_to.
+// Returns the new direction in xyz and w = 1 when it went through.
+fn dielectric(rd: vec3f, nf: vec3f, eta: f32, rough: f32) -> vec4f {
+  let cosi = -dot(rd, nf);
+  let refr = refract(rd, nf, eta);
+  let tir = dot(refr, refr) < 1e-8;
+  if (tir || rand() < fresnel(cosi, eta)) {
+    var d = reflect(rd, nf);
+    let g = normalize(d + randomUnit() * rough * rough);
+    if (dot(g, nf) > 0.0) { d = g; }
+    return vec4f(d, 0.0);
+  }
+  var d = normalize(refr);
+  let g = normalize(d + randomUnit() * rough * rough);
+  if (dot(g, nf) < 0.0) { d = g; }
+  return vec4f(d, 1.0);
+}
+
+// ---------- sky ----------
+fn envLookup(rd: vec3f) -> vec3f {
+  let size = textureDimensions(envTex);
+  let u = fract(atan2(rd.y, rd.x) / (2.0 * PI) + 0.5 + P.env.z / (2.0 * PI));
+  let v = acos(clamp(rd.z, -1.0, 1.0)) / PI;
+  let px = min(vec2u(vec2f(u, v) * vec2f(size)), size - vec2u(1u));
+  return textureLoad(envTex, px, 0).rgb * P.env.y;
+}
+
+// Single-scattering sky: Rayleigh + Mie, thicker towards the horizon.
+// TODO(match): MagicaVoxel's _atm model is not public; this is tuned by eye.
+fn atmosphere(rd: vec3f) -> vec3f {
+  let up = max(rd.z, 0.0);
+  let depth = 1.0 / (up + 0.12);
+  let mu = dot(rd, P.sunDir.xyz);
+  let rayPhase = 0.0597 * (1.0 + mu * mu);
+  let g = P.mie.w;
+  let miePhase = 0.0796 * (1.0 - g * g) / pow(max(1e-4, 1.0 + g * g - 2.0 * g * mu), 1.5);
+  let betaR = P.rayleigh.rgb;
+  let betaM = P.mie.rgb * P.rayleigh.w;
+  let beta = betaR + betaM;
+  let ext = exp(-beta * depth);
+  let scatter = (betaR * rayPhase + betaM * miePhase) / max(beta, vec3f(1e-4)) * (vec3f(1.0) - ext);
+  let sun = max(P.sunColor.rgb, vec3f(0.05));
+  // Below the horizon, fade to a dimmer version of the horizon colour.
+  let below = smoothstep(0.0, -0.3, rd.z);
+  return scatter * sun * 4.0 * P.env.w * mix(1.0, 0.35, below);
+}
+
+// ---------- sky importance sampling (HDR mode) ----------
+fn envSampling() -> bool { return P.env.x > 1.5 && P.envSample.z == 1u; }
+
+// Index of the first entry in [start, start+count] greater than u, minus one.
+fn searchCdf(start: u32, count: u32, u: f32) -> u32 {
+  var lo = 0u; var hi = count;
+  while (lo < hi) {
+    let mid = (lo + hi) / 2u;
+    if (envTable[start + mid + 1u] <= u) { lo = mid + 1u; } else { hi = mid; }
+  }
+  return min(lo, count - 1u);
+}
+
+fn envDir(u: f32, v: f32) -> vec3f {
+  let phi = (u - 0.5 - P.env.z / (2.0 * PI)) * 2.0 * PI;
+  let theta = v * PI;
+  return vec3f(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+}
+
+fn envPdf(rd: vec3f) -> f32 {
+  let w = P.envSample.x; let h = P.envSample.y;
+  let u = fract(atan2(rd.y, rd.x) / (2.0 * PI) + 0.5 + P.env.z / (2.0 * PI));
+  let v = acos(clamp(rd.z, -1.0, 1.0)) / PI;
+  let x = min(u32(u * f32(w)), w - 1u);
+  let y = min(u32(v * f32(h)), h - 1u);
+  let sinT = max(sin(v * PI), 1e-4);
+  let p = envTable[(h + 1u) + h * (w + 1u) + y * w + x];
+  return p / (2.0 * PI * PI * sinT);
+}
+
+// Returns a direction towards the sky in xyz and its probability density in w.
+fn sampleEnv() -> vec4f {
+  let w = P.envSample.x; let h = P.envSample.y;
+  let y = searchCdf(0u, h, rand());
+  let x = searchCdf((h + 1u) + y * (w + 1u), w, rand());
+  let u = (f32(x) + rand()) / f32(w);
+  let v = (f32(y) + rand()) / f32(h);
+  let d = envDir(u, v);
+  return vec4f(d, envPdf(d));
 }
 
 fn skyRadiance(rd: vec3f) -> vec3f {
-  // Uniform sky. TODO(match): MagicaVoxel's atmosphere sky (_atm) and its sun disk glow.
+  let mode = P.env.x;
+  if (mode > 1.5) { return envLookup(rd); }
+  if (mode > 0.5) { return atmosphere(rd); }
   return P.skyColor.rgb;
 }
 
-fn sunLight(p: vec3f, n: vec3f) -> vec3f {
+// What a camera ray sees when it misses everything.
+fn backgroundRadiance(rd: vec3f) -> vec3f {
+  if (P.bgColor.w > 0.5) { return P.bgColor.rgb; }
+  var c = skyRadiance(rd);
+  if (P.extra.z > 0.5 && dot(rd, P.sunDir.xyz) > P.sunDir.w) {
+    c += P.sunColor.rgb / max(2.0 * PI * (1.0 - P.sunDir.w), 1e-4) * 0.05;
+  }
+  return c;
+}
+
+// Fraction of sunlight reaching p along l: solid voxels block it, clear ones tint it.
+fn shadowTransmittance(p: vec3f, l: vec3f, startInside: u32) -> vec3f {
+  var T = vec3f(1.0);
+  var o = p;
+  var inside = startInside;
+  for (var i = 0; i < 12; i++) {
+    let h = traceScene(o, l, inside);
+    if (!h.hit) { return T; }
+    if (h.id == GROUND_ID) { return vec3f(0.0); }
+    if (inside != 0u) { T *= exp(-absorption(mats[inside]) * h.t); }
+    if (h.id == 0u) {
+      inside = 0u;
+    } else {
+      let m = mats[h.id];
+      if (!isClear(m)) { return vec3f(0.0); }
+      T *= m.b.w;
+      inside = h.id;
+    }
+    if (max(T.r, max(T.g, T.b)) < 0.01) { return vec3f(0.0); }
+    o = o + l * (h.t + EPS);
+  }
+  return T;
+}
+
+fn sunLight(p: vec3f, n: vec3f, inside: u32) -> vec3f {
   if (P.sunColor.w < 0.5) { return vec3f(0.0); }
   let l = sampleCone(P.sunDir.xyz, P.sunDir.w);
   let ndl = dot(n, l);
   if (ndl <= 0.0) { return vec3f(0.0); }
-  if (occluded(p, l)) { return vec3f(0.0); }
-  return P.sunColor.rgb * ndl;
+  return P.sunColor.rgb * ndl * shadowTransmittance(p, l, inside);
 }
 
 fn cameraRay(px: vec2f, ro: ptr<function, vec3f>, rd: ptr<function, vec3f>) {
@@ -211,40 +364,97 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   var radiance = vec3f(0.0);
   var throughput = vec3f(1.0);
+  var inside = 0u;          // id of the clear material the ray is travelling through
+  var cameraPath = true;    // still seeing directly through glass from the camera
+  var lastDiffusePdf = 0.0; // pdf of the last bounce if it was diffuse (for MIS), else 0
   let maxBounces = P.misc.z;
 
-  for (var bounce = 0u; bounce <= maxBounces; bounce++) {
-    let h = traceScene(ro, rd);
+  for (var bounce = 0u; bounce <= maxBounces + 8u; bounce++) {
+    let h = traceScene(ro, rd, inside);
+    if (inside != 0u) { throughput *= exp(-absorption(mats[inside]) * min(h.t, 64.0)); }
     if (!h.hit) {
-      if (bounce == 0u && P.bgColor.w > 0.5) { radiance += throughput * P.bgColor.rgb; }
-      else { radiance += throughput * skyRadiance(rd); }
+      var sky = select(skyRadiance(rd), backgroundRadiance(rd), cameraPath);
+      // The sky was also sampled directly at the last diffuse bounce: combine the two (MIS).
+      if (lastDiffusePdf > 0.0 && envSampling()) {
+        let e = envPdf(rd);
+        sky *= lastDiffusePdf * lastDiffusePdf / (lastDiffusePdf * lastDiffusePdf + e * e);
+      }
+      radiance += throughput * sky;
       break;
     }
-    let p = ro + rd * h.t + h.n * 1e-3;
-    var albedo = P.ground.rgb;
-    var mtype = 0.0; var rough = 1.0; var metal = 0.0; var emit = 0.0; var flux = 0.0;
-    if (h.id != GROUND_ID) {
-      let m = mats[h.id];
-      albedo = m.color.rgb; mtype = m.a.x; rough = m.a.y; metal = m.a.z; emit = m.a.w; flux = m.b.y;
+    let hp = ro + rd * h.t;
+
+    // Leaving a clear material into air.
+    if (inside != 0u && h.id == 0u) {
+      let m = mats[inside];
+      let r = dielectric(rd, h.n, m.b.x, m.a.y);
+      if (r.w > 0.5) { inside = 0u; ro = hp - h.n * EPS; } else { ro = hp + h.n * EPS; lastDiffusePdf = 0.0; }
+      rd = r.xyz;
+      continue;
     }
 
-    if (mtype == 3.0 && emit > 0.0) {
+    // Ground seen from the camera fades into the background towards the horizon.
+    if (h.id == GROUND_ID && cameraPath && P.extra.y > 0.0) {
+      let r = P.extra.x;
+      let fade = smoothstep(r, r * (1.0 + P.extra.y * 40.0), length(hp.xy - (P.gridOrigin.xy + vec2f(P.dims.xy) * 0.5)));
+      if (rand() < fade) { radiance += throughput * backgroundRadiance(rd); break; }
+    }
+
+    var m: Material;
+    if (h.id == GROUND_ID) {
+      m.color = vec4f(P.ground.rgb, 1.0); m.a = vec4f(0.0, 1.0, 0.0, 0.0); m.b = vec4f(1.5, 0.0, 0.0, 0.0); m.c = vec4f(0.0);
+    } else {
+      m = mats[h.id];
+    }
+
+    // Entering a clear material (glass, or the see-through part of a blend).
+    if (h.id != GROUND_ID && h.id != inside && isClear(m) && rand() < m.b.w) {
+      let r = dielectric(rd, h.n, 1.0 / m.b.x, m.a.y);
+      if (r.w > 0.5) { inside = h.id; ro = hp - h.n * EPS; } else { ro = hp + h.n * EPS; cameraPath = false; lastDiffusePdf = 0.0; }
+      rd = r.xyz;
+      continue;
+    }
+
+    let albedo = m.color.rgb;
+    let mtype = m.a.x;
+    if (mtype == 3.0 && m.a.w > 0.0) {
       // TODO(match): calibrate emission strength against MagicaVoxel (_emit, _flux, _ldr).
-      radiance += throughput * albedo * emit * exp2(flux) * 0.5;
+      radiance += throughput * albedo * m.a.w * exp2(m.b.y) * 0.5;
     }
+    if (bounce >= maxBounces) { break; }
+    cameraPath = false;
+    let p = hp + h.n * EPS;
 
-    let isMetal = (mtype == 1.0 || mtype == 4.0) && rand() < metal;
-    if (isMetal) {
+    // Blend materials have a glossy coat whose strength follows Fresnel and _sp.
+    let coat = select(0.0, fresnel(-dot(rd, h.n), 1.0 / m.b.x) * clamp(m.b.z, 0.0, 1.0), mtype == 4.0);
+    if ((mtype == 1.0 || mtype == 4.0) && rand() < m.a.z) {
       let refl = reflect(rd, h.n);
-      var dir = normalize(refl + randomUnit() * rough * rough);
+      var dir = normalize(refl + randomUnit() * m.a.y * m.a.y);
       if (dot(dir, h.n) <= 0.0) { dir = refl; }
       throughput *= albedo;
       ro = p; rd = dir;
+      lastDiffusePdf = 0.0;
+    } else if (rand() < coat) {
+      let refl = reflect(rd, h.n);
+      var dir = normalize(refl + randomUnit() * m.a.y * m.a.y);
+      if (dot(dir, h.n) <= 0.0) { dir = refl; }
+      ro = p; rd = dir;
+      lastDiffusePdf = 0.0;
     } else {
-      // Diffuse (glass and media are treated as diffuse until they are implemented).
-      radiance += throughput * albedo * (1.0 / PI) * sunLight(p, h.n);
+      radiance += throughput * albedo * (1.0 / PI) * sunLight(p, h.n, inside);
+      if (envSampling()) {
+        let s = sampleEnv();
+        let ndl = dot(h.n, s.xyz);
+        if (ndl > 0.0 && s.w > 0.0) {
+          let bsdfPdf = ndl / PI;
+          let mis = s.w * s.w / (s.w * s.w + bsdfPdf * bsdfPdf);
+          let li = envLookup(s.xyz) * shadowTransmittance(p, s.xyz, inside);
+          radiance += throughput * albedo * (1.0 / PI) * li * ndl / s.w * mis;
+        }
+      }
       throughput *= albedo;
       ro = p; rd = cosineHemisphere(h.n);
+      lastDiffusePdf = max(dot(rd, h.n), 0.0) / PI;
     }
 
     if (bounce >= 3u) {

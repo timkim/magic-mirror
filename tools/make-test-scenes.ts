@@ -5,6 +5,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { writeVox, type WriterObject } from '../src/vox/writer';
+import { writeHdr } from '../src/render/hdr';
 
 type V = [number, number, number, number];
 
@@ -88,8 +89,60 @@ const scenes: Record<string, Parameters<typeof writeVox>[0]> = {};
   scenes['03-rotations'] = { objects: objs, palette };
 }
 
+// 4. Glass: a clear block, a tinted pane in front of a coloured wall, a frosted block, and a
+//    see-through "blend" block. Sun from the side so light through glass is visible.
+{
+  const objs: WriterObject[] = [
+    { name: 'floor', size: [72, 48, 1], voxels: box(72, 48, 1, 1), translation: [0, 0, 0] },
+    { name: 'wall', size: [72, 2, 20], voxels: box(72, 2, 20, 3), translation: [0, 14, 10] },
+    { name: 'clear-block', size: [12, 12, 12], voxels: box(12, 12, 12, 10), translation: [-24, 0, 7] },
+    { name: 'tinted-pane', size: [16, 1, 16], voxels: box(16, 1, 16, 11), translation: [-4, 2, 9] },
+    { name: 'frosted', size: [10, 10, 10], voxels: box(10, 10, 10, 12), translation: [14, 0, 6] },
+    { name: 'blend', size: [10, 10, 10], voxels: box(10, 10, 10, 13), translation: [28, 0, 6] },
+    { name: 'red-behind', size: [6, 6, 6], voxels: box(6, 6, 6, 2), translation: [-4, 8, 4] },
+  ];
+  scenes['04-glass'] = {
+    objects: objs,
+    palette: { ...palette, 10: [240, 250, 255], 11: [80, 160, 255], 12: [255, 255, 255], 13: [255, 200, 120] },
+    materials: {
+      10: { _type: '_glass', _trans: '1', _rough: '0', _ri: '1.5', _d: '0' },
+      11: { _type: '_glass', _trans: '0.9', _rough: '0', _ri: '1.05', _d: '0.05' },
+      12: { _type: '_glass', _trans: '1', _rough: '0.3', _ri: '1.3', _d: '0.01' },
+      13: { _type: '_blend', _trans: '0.6', _rough: '0.1', _ri: '1.4', _sp: '1', _d: '0.02' },
+    },
+    renderObjects: [
+      { _type: '_inf', _i: '0.9', _k: '255 255 255', _angle: '35 120', _area: '0.05', _disk: '0' },
+      { _type: '_env', _mode: '1' },
+    ],
+  };
+}
+
 mkdirSync('test-scenes', { recursive: true });
 for (const [name, scene] of Object.entries(scenes)) {
   writeFileSync(`test-scenes/${name}.vox`, writeVox(scene));
   console.log(`test-scenes/${name}.vox`);
+}
+
+// A test sky image: blue zenith, warm horizon, dark ground and a small bright sun.
+{
+  const w = 512, h = 256;
+  const rgb = new Float32Array(w * h * 3);
+  const sun = [Math.cos(0.6) * Math.cos(2.2), Math.cos(0.6) * Math.sin(2.2), Math.sin(0.6)];
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const theta = (y + 0.5) / h * Math.PI, phi = ((x + 0.5) / w - 0.5) * 2 * Math.PI;
+      const d = [Math.sin(theta) * Math.cos(phi), Math.sin(theta) * Math.sin(phi), Math.cos(theta)];
+      const up = d[2];
+      let c: number[];
+      if (up >= 0) {
+        const t = Math.pow(1 - up, 3);
+        c = [0.25 + 0.75 * t, 0.45 + 0.4 * t, 1.0 - 0.3 * t];
+      } else c = [0.2, 0.17, 0.14];
+      const mu = d[0] * sun[0] + d[1] * sun[1] + d[2] * sun[2];
+      if (mu > 0.9995) c = c.map((v) => v + 400);
+      else c = c.map((v, i) => v + Math.pow(Math.max(mu, 0), 64) * [2, 1.6, 1][i]);
+      rgb.set(c, (y * w + x) * 3);
+    }
+  writeFileSync('test-scenes/test-sky.hdr', writeHdr({ width: w, height: h, rgb }));
+  console.log('test-scenes/test-sky.hdr');
 }

@@ -17,6 +17,8 @@ export class Layout {
   /** Holds the canvas and overlays; sized to the render's aspect ratio. */
   readonly stage: HTMLElement;
   readonly status: HTMLElement;
+  /** Strip under the viewport for the animation timeline (hidden until used). */
+  readonly timeline: HTMLElement;
   private statusFields = new Map<string, HTMLElement>();
 
   constructor(root: HTMLElement) {
@@ -25,6 +27,7 @@ export class Layout {
       <aside class="mm-col mm-left"></aside>
       <main class="mm-viewport"><div class="mm-stage"></div></main>
       <aside class="mm-col mm-right"></aside>
+      <div class="mm-timeline" hidden></div>
       <footer class="mm-status"></footer>`;
     root.classList.add('mm-app');
     this.toolbar = root.querySelector('.mm-toolbar')!;
@@ -33,6 +36,7 @@ export class Layout {
     this.viewport = root.querySelector('.mm-viewport')!;
     this.stage = root.querySelector('.mm-stage')!;
     this.status = root.querySelector('.mm-status')!;
+    this.timeline = root.querySelector('.mm-timeline')!;
   }
 
   addPanel(slot: PanelSlot, title: string, opts: { collapsed?: boolean; order?: number } = {}): PanelHandle {

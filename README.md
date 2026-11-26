@@ -17,8 +17,13 @@ npm run dev          # http://localhost:5173 (also reachable from other PCs on y
 Use Chrome or Edge (WebGPU). Open a `.vox` (button or drag-and-drop), or pick one of the test scenes.
 
 - **Orbit:** left-drag. **Pan:** right-drag or Shift-drag. **Zoom:** mouse wheel.
-- **Save PNG** saves the current render at the full output resolution (preview scale applied).
+- **File camera** picks any camera slot stored in the .vox (perspective, orthographic or isometric).
+- **HDR sky…** (or drop an `.hdr`) lights the scene with an equirectangular HDR image. If the scene was set up with one in MagicaVoxel, the status bar names the file it expects.
+- **Timeline** (shown for animated scenes): play, step with `,` and `.`, Space to play or pause. **Export frames…** renders every frame to PNG; in Chrome or Edge it writes straight into a folder you pick.
+- **Save PNG** saves the current render at the output resolution (preview scale applied).
 - Set **Preview scale** to `1` for final-quality frames. The default output is 1080 × 1920 portrait.
+
+What it renders: sun with soft shadows, uniform / atmosphere / HDR skies, ground plane with horizon fade, diffuse, metal, emissive, glass (refraction, tint, frosted) and blend materials (see-through + glossy coat), depth of field, orthographic cameras, bloom, ACES tone mapping and vignette. Render settings stored in the .vox (sun, sky, atmosphere, HDR, lens, film, bloom, ground, background, bounces, cameras) are read on open.
 
 Other commands:
 
@@ -26,6 +31,8 @@ Other commands:
 npm test                     # parser and scene-graph tests
 npm run scenes               # regenerate test-scenes/*.vox
 npm run render -- test-scenes/01-diffuse.vox out.png --samples 256 --set out.previewScale=1
+npm run render -- city.vox frames/city_####.png --frames 0-29 --hdr sky.hdr --set cam.slot=2
+npx tsx tools/inspect-vox.ts city.vox   # print models, materials, render settings, cameras
 npm run build                # static build in dist/
 ```
 
@@ -37,12 +44,13 @@ npm run build                # static build in dist/
 2. Render it in MagicaVoxel at the same resolution and save the image.
 3. Click **Reference…** (or drop the image) and compare with **Wipe**, **Overlay** or **Difference**. In Difference mode, black means identical.
 4. Adjust the renderer until they match. Places that need checking are marked `TODO(match)` in the code:
-   - emission strength (`_emit`, `_flux`)
-   - tone curve and exposure
-   - sky model (`_atm`) and sun disk
-   - mapping of render settings and camera slots from the file (`src/vox/renderSettings.ts`)
+   - camera yaw zero direction (`YAW_OFFSET`) and orthographic zoom
+   - emission strength (`_emit`, `_flux`, `_ldr`)
+   - exposure (`_film._expo`), tone curve, bloom blend (mix vs add)
+   - atmosphere model (`_atm`), `_env` mode numbers, sun size (`_area`)
+   - glass absorption (`_d`), blend coat strength (`_sp`); `_media` scattering is not simulated yet
+   - ground horizon fade (`_hor`)
    - pivot rule for rotated even-sized models
-   - glass and media (currently rendered as diffuse)
 
 The **File render settings** panel lists the raw `rOBJ`/`rCAM` dictionaries stored in the open file, so you can see which keys MagicaVoxel wrote.
 
@@ -52,12 +60,13 @@ The **File render settings** panel lists the raw `rOBJ`/`rCAM` dictionaries stor
 src/
   vox/        parser.ts (reads .vox), scene.ts (scene graph → world voxel grid),
               writer.ts (writes test files), renderSettings.ts (file settings → app settings)
-  render/     renderer.ts (GPU, no DOM), shaders/ (path tracer + present pass),
-              params.ts (settings → renderer inputs), materials.ts, readback.ts
+  render/     renderer.ts (GPU, no DOM), shaders/ (path tracer, bloom, present pass),
+              params.ts (settings → renderer inputs), materials.ts, hdr.ts, readback.ts
   core/       settings.ts (schema-driven settings), feature.ts (the extension interface)
-  features/   core.ts (camera, lighting, render, image), viewport.ts, compare.ts, sceneInfo.ts
+  features/   core.ts (camera, sun, sky, ground, render, image), viewport.ts, compare.ts,
+              sceneInfo.ts, environment.ts (HDR sky), timeline.ts
   ui/         layout.ts (toolbar, docked panels, status bar), settingsPanel.ts (auto-built controls)
-tools/        make-test-scenes.ts, render-headless.ts
+tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts
 test-scenes/  one small scene per feature being matched
 ```
 
@@ -83,8 +92,8 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
-- **Look:** finish matching the items listed above; add bloom, glass, fog/media and the atmosphere sky.
-- **Animation:** timeline panel and frame stepping (the scene graph already evaluates keyframes and flipbooks at any frame).
+- **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
+- **Animation:** faster frame changes (re-upload only the models that moved).
 - **Big scenes:** sparse bricks instead of the dense grid; streaming.
 - **Network rendering:** a small coordinator that hands out frames; workers are browser tabs or `render-headless` processes; ffmpeg to stitch.
 

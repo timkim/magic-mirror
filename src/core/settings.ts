@@ -28,6 +28,8 @@ export interface SettingGroup {
   defs: SettingDef[];
   /** Panel slot the group's controls go into. */
   slot?: 'left' | 'right';
+  /** Don't build controls for this group (a feature provides its own UI). */
+  hidden?: boolean;
 }
 
 type Listener = (key: string, value: SettingValue) => void;

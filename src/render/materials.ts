@@ -2,7 +2,7 @@
 
 import type { VoxDict } from '../vox/types';
 
-export const MATERIAL_FLOATS = 12;
+export const MATERIAL_FLOATS = 16;
 
 const TYPES: Record<string, number> = { _diffuse: 0, _metal: 1, _glass: 2, _emit: 3, _blend: 4, _media: 5, _cloud: 5 };
 
@@ -37,7 +37,10 @@ export function buildMaterialTable(palette: Uint8Array, materials: Map<number, V
     out[o + 8] = num(m, '_ri', num(m, '_ior', 0.3) + 1);
     out[o + 9] = num(m, '_flux', 0);
     out[o + 10] = num(m, '_sp', num(m, '_spec', 0.5));
-    out[o + 11] = 0;
+    // How see-through the surface is: glass defaults to clear, blend to opaque.
+    out[o + 11] = type === 2 ? num(m, '_trans', num(m, '_alpha', 1)) : type === 4 || type === 5 ? num(m, '_trans', num(m, '_alpha', 0)) : 0;
+    out[o + 12] = num(m, '_d', 0); // absorption density inside clear materials
+    // 13-15 reserved
   }
   return out;
 }

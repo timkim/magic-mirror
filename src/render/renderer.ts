@@ -3,6 +3,7 @@
 
 import { PATHTRACE_WGSL } from './shaders/pathtrace.wgsl';
 import { PRESENT_WGSL } from './shaders/present.wgsl';
+import { BLOOM_WGSL } from './shaders/bloom.wgsl';
 import { buildMaterialTable } from './materials';
 import type { VoxelGrid } from '../vox/scene';
 import type { VoxDict } from '../vox/types';
@@ -21,15 +22,27 @@ export interface CameraParams {
   focusDistance: number;
 }
 
+export type SkyMode = 'uniform' | 'atmosphere' | 'hdr';
+
 export interface LightingParams {
   sunDirection: Vec3; // towards the sun
   sunCosRadius: number;
   sunColor: Vec3; // already multiplied by intensity
   sunEnabled: boolean;
-  skyColor: Vec3;
+  sunDisk: boolean;
+  skyMode: SkyMode;
+  skyColor: Vec3; // uniform sky radiance
+  rayleigh: Vec3; // atmosphere Rayleigh colour × density
+  mieColor: Vec3;
+  mieDensity: number;
+  mieG: number;
+  atmosphereIntensity: number;
+  hdrIntensity: number;
+  hdrRotation: number; // radians
   background: Vec3 | null; // null = show the sky behind the scene
   ground: Vec3 | null; // null = no ground plane
   groundHeight: number;
+  horizonFade: number; // 0 = ground runs to the horizon
 }
 
 export interface PostParams {
@@ -37,6 +50,10 @@ export interface PostParams {
   tonemap: 'none' | 'aces' | 'reinhard';
   gamma: number;
   vignette: number;
+  bloomMix: number;
+  bloomScale: number; // blur size relative to image height
+  bloomAspect: number; // 0.5 = round; higher = wider
+  bloomThreshold: number;
 }
 
 export interface FrameParams {
@@ -46,22 +63,35 @@ export interface FrameParams {
 }
 
 const BRICK = 8;
+const PARAMS_BYTES = 17 * 16;
 
 export class Renderer {
   readonly device: GPUDevice;
   private format: GPUTextureFormat;
-  private traceModule: GPUComputePipeline;
+  private tracePipeline: GPUComputePipeline;
   private presentPipeline: GPURenderPipeline;
+  private bloomPrep: GPUComputePipeline;
+  private bloomBlur: GPUComputePipeline;
   private params: GPUBuffer;
   private post: GPUBuffer;
+  private bloomUniforms: GPUBuffer[];
   private materials: GPUBuffer;
+  private sampler: GPUSampler;
   private voxelTex: GPUTexture | null = null;
   private brickTex: GPUTexture | null = null;
+  private envTex: GPUTexture;
+  private envTable: GPUBuffer;
+  private envSampleSize: [number, number] = [0, 0];
   private accum: GPUBuffer | null = null;
+  private bloomA: GPUTexture | null = null;
+  private bloomB: GPUTexture | null = null;
   private traceGroup: GPUBindGroup | null = null;
   private presentGroup: GPUBindGroup | null = null;
+  private bloomGroups: GPUBindGroup[] = [];
   private grid: VoxelGrid | null = null;
   private frame: FrameParams | null = null;
+  private staging: GPUBuffer[] = [];
+  hasEnvironment = false;
   width = 0;
   height = 0;
   /** Samples accumulated per pixel since the last reset. */
@@ -72,7 +102,7 @@ export class Renderer {
     this.device = device;
     this.format = format;
     const traceShader = device.createShaderModule({ label: 'pathtrace', code: PATHTRACE_WGSL });
-    this.traceModule = device.createComputePipeline({ label: 'pathtrace', layout: 'auto', compute: { module: traceShader, entryPoint: 'main' } });
+    this.tracePipeline = device.createComputePipeline({ label: 'pathtrace', layout: 'auto', compute: { module: traceShader, entryPoint: 'main' } });
     const presentShader = device.createShaderModule({ label: 'present', code: PRESENT_WGSL });
     this.presentPipeline = device.createRenderPipeline({
       label: 'present',
@@ -81,15 +111,24 @@ export class Renderer {
       fragment: { module: presentShader, entryPoint: 'fs', targets: [{ format }] },
       primitive: { topology: 'triangle-list' },
     });
-    this.params = device.createBuffer({ size: 12 * 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.post = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.materials = device.createBuffer({ size: 256 * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const bloomShader = device.createShaderModule({ label: 'bloom', code: BLOOM_WGSL });
+    this.bloomPrep = device.createComputePipeline({ label: 'bloom-prep', layout: 'auto', compute: { module: bloomShader, entryPoint: 'prep' } });
+    this.bloomBlur = device.createComputePipeline({ label: 'bloom-blur', layout: 'auto', compute: { module: bloomShader, entryPoint: 'blur' } });
+
+    const U = GPUBufferUsage;
+    this.params = device.createBuffer({ size: PARAMS_BYTES, usage: U.UNIFORM | U.COPY_DST });
+    this.post = device.createBuffer({ size: 32, usage: U.UNIFORM | U.COPY_DST });
+    this.bloomUniforms = [0, 1, 2].map(() => device.createBuffer({ size: 48, usage: U.UNIFORM | U.COPY_DST }));
+    this.materials = device.createBuffer({ size: 256 * 64, usage: U.STORAGE | U.COPY_DST });
+    this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    this.envTex = this.makeEnvTexture(1, 1, new Uint16Array(4));
+    this.envTable = this.makeEnvTable(new Float32Array(4));
   }
 
   /** Check shaders compiled; returns error messages (empty when fine). */
   static async shaderErrors(device: GPUDevice): Promise<string[]> {
     const errs: string[] = [];
-    for (const [label, code] of [['pathtrace', PATHTRACE_WGSL], ['present', PRESENT_WGSL]]) {
+    for (const [label, code] of [['pathtrace', PATHTRACE_WGSL], ['present', PRESENT_WGSL], ['bloom', BLOOM_WGSL]]) {
       const info = await device.createShaderModule({ label, code }).getCompilationInfo();
       for (const m of info.messages) if (m.type === 'error') errs.push(`${label}:${m.lineNum}:${m.linePos} ${m.message}`);
     }
@@ -124,6 +163,32 @@ export class Renderer {
     this.reset();
   }
 
+  /** Equirectangular HDR environment (RGBA half floats + sampling table), or null to clear it. */
+  setEnvironment(env: { width: number; height: number; data: Uint16Array; sampling?: { width: number; height: number; table: Float32Array } } | null) {
+    this.envTex.destroy();
+    this.envTable.destroy();
+    this.envTex = env ? this.makeEnvTexture(env.width, env.height, env.data) : this.makeEnvTexture(1, 1, new Uint16Array(4));
+    this.envTable = this.makeEnvTable(env?.sampling?.table ?? new Float32Array(4));
+    this.envSampleSize = env?.sampling ? [env.sampling.width, env.sampling.height] : [0, 0];
+    this.hasEnvironment = !!env;
+    this.rebind();
+    this.reset();
+  }
+
+  private makeEnvTexture(w: number, h: number, data: Uint16Array) {
+    const max = this.device.limits.maxTextureDimension2D;
+    if (w > max || h > max) throw new Error(`HDR image is ${w}×${h}; this GPU allows ${max} per side.`);
+    const t = this.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    this.device.queue.writeTexture({ texture: t }, data as Uint16Array<ArrayBuffer>, { bytesPerRow: w * 8 }, [w, h]);
+    return t;
+  }
+
+  private makeEnvTable(table: Float32Array) {
+    const b = this.device.createBuffer({ size: Math.max(16, table.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(b, 0, table as Float32Array<ArrayBuffer>);
+    return b;
+  }
+
   resize(width: number, height: number) {
     width = Math.max(1, Math.floor(width));
     height = Math.max(1, Math.floor(height));
@@ -132,6 +197,12 @@ export class Renderer {
     this.height = height;
     this.accum?.destroy();
     this.accum = this.device.createBuffer({ size: width * height * 16, usage: GPUBufferUsage.STORAGE });
+    this.bloomA?.destroy();
+    this.bloomB?.destroy();
+    const bw = Math.max(1, Math.ceil(width / 4)), bh = Math.max(1, Math.ceil(height / 4));
+    const usage = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+    this.bloomA = this.device.createTexture({ size: [bw, bh], format: 'rgba16float', usage });
+    this.bloomB = this.device.createTexture({ size: [bw, bh], format: 'rgba16float', usage });
     this.rebind();
     this.reset();
   }
@@ -150,16 +221,18 @@ export class Renderer {
   }
 
   private rebind() {
-    if (!this.voxelTex || !this.brickTex || !this.accum) return;
+    if (!this.voxelTex || !this.brickTex || !this.accum || !this.bloomA || !this.bloomB) return;
     const d = this.device;
     this.traceGroup = d.createBindGroup({
-      layout: this.traceModule.getBindGroupLayout(0),
+      layout: this.tracePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.params } },
         { binding: 1, resource: this.voxelTex.createView() },
         { binding: 2, resource: this.brickTex.createView() },
         { binding: 3, resource: { buffer: this.materials } },
         { binding: 4, resource: { buffer: this.accum } },
+        { binding: 5, resource: this.envTex.createView() },
+        { binding: 6, resource: { buffer: this.envTable } },
       ],
     });
     this.presentGroup = d.createBindGroup({
@@ -167,13 +240,41 @@ export class Renderer {
       entries: [
         { binding: 0, resource: { buffer: this.post } },
         { binding: 1, resource: { buffer: this.accum } },
+        { binding: 2, resource: this.bloomA.createView() },
+        { binding: 3, resource: this.sampler },
       ],
     });
+    this.bloomGroups = [
+      d.createBindGroup({
+        layout: this.bloomPrep.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.bloomUniforms[0] } },
+          { binding: 1, resource: { buffer: this.accum } },
+          { binding: 2, resource: this.bloomA.createView() },
+        ],
+      }),
+      d.createBindGroup({
+        layout: this.bloomBlur.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.bloomUniforms[1] } },
+          { binding: 2, resource: this.bloomB.createView() },
+          { binding: 3, resource: this.bloomA.createView() },
+        ],
+      }),
+      d.createBindGroup({
+        layout: this.bloomBlur.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.bloomUniforms[2] } },
+          { binding: 2, resource: this.bloomA.createView() },
+          { binding: 3, resource: this.bloomB.createView() },
+        ],
+      }),
+    ];
   }
 
   private writeParams(target: GPUBuffer) {
     const f = this.frame!, g = this.grid!, c = f.camera, l = f.lighting;
-    const buf = new ArrayBuffer(12 * 16);
+    const buf = new ArrayBuffer(PARAMS_BYTES);
     const fv = new Float32Array(buf);
     const uv = new Uint32Array(buf);
     const put = (slot: number, v: Vec3, w: number) => fv.set([v[0], v[1], v[2], w], slot * 4);
@@ -189,6 +290,13 @@ export class Renderer {
     put(9, g.origin, l.groundHeight);
     uv.set([g.dims[0], g.dims[1], g.dims[2], this.samples], 40);
     uv.set([this.width, this.height, f.maxBounces, this.seed], 44);
+    put(12, l.rayleigh, l.mieDensity);
+    put(13, l.mieColor, l.mieG);
+    // HDR mode without an image loaded falls back to the atmosphere.
+    const mode = l.skyMode === 'hdr' ? (this.hasEnvironment ? 2 : 1) : l.skyMode === 'atmosphere' ? 1 : 0;
+    fv.set([mode, l.hdrIntensity, l.hdrRotation, l.atmosphereIntensity], 56);
+    fv.set([Math.hypot(g.dims[0], g.dims[1]) / 2, l.horizonFade, l.sunDisk ? 1 : 0, 0], 60);
+    uv.set([this.envSampleSize[0], this.envSampleSize[1], this.envSampleSize[0] > 0 ? 1 : 0, 0], 64);
     this.device.queue.writeBuffer(target, 0, buf);
   }
 
@@ -196,9 +304,14 @@ export class Renderer {
   trace(encoder: GPUCommandEncoder, count = 1) {
     if (!this.ready) return;
     for (let i = 0; i < count; i++) {
-      this.writeParamsInto(encoder);
+      // writeBuffer lands at submit time, before the encoder runs, so several samples in one
+      // submit would all see the last value. Each sample copies from its own staging buffer.
+      const idx = this.samples % 64;
+      if (!this.staging[idx]) this.staging[idx] = this.device.createBuffer({ size: PARAMS_BYTES, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      this.writeParams(this.staging[idx]);
+      encoder.copyBufferToBuffer(this.staging[idx], 0, this.params, 0, PARAMS_BYTES);
       const pass = encoder.beginComputePass();
-      pass.setPipeline(this.traceModule);
+      pass.setPipeline(this.tracePipeline);
       pass.setBindGroup(0, this.traceGroup!);
       pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
       pass.end();
@@ -206,26 +319,43 @@ export class Renderer {
     }
   }
 
-  private staging: GPUBuffer[] = [];
-  private writeParamsInto(encoder: GPUCommandEncoder) {
-    // writeBuffer is applied at submit time, before the encoder runs, so multiple samples in one
-    // submit would all see the last value. Copy from a per-sample staging buffer instead.
-    const d = this.device;
-    const idx = this.samples % 64;
-    if (!this.staging[idx]) this.staging[idx] = d.createBuffer({ size: 12 * 16, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-    this.writeParams(this.staging[idx]);
-    encoder.copyBufferToBuffer(this.staging[idx], 0, this.params, 0, 12 * 16);
+  private encodeBloom(encoder: GPUCommandEncoder, post: PostParams) {
+    const bw = this.bloomA!.width, bh = this.bloomA!.height;
+    const r = post.bloomScale * bh * 0.25;
+    const rx = r * 2 * post.bloomAspect, ry = r * 2 * (1 - post.bloomAspect);
+    const write = (i: number, radius: number, dir: [number, number]) => {
+      const buf = new ArrayBuffer(48);
+      const u = new Uint32Array(buf), f = new Float32Array(buf);
+      u.set([this.width, this.height, bw, bh], 0);
+      f.set([Math.max(1, this.samples), post.exposure, post.bloomThreshold, radius, dir[0], dir[1]], 4);
+      this.device.queue.writeBuffer(this.bloomUniforms[i], 0, buf);
+    };
+    write(0, 0, [0, 0]);
+    write(1, rx, [1, 0]);
+    write(2, ry, [0, 1]);
+    const pass = encoder.beginComputePass();
+    const wg: [number, number] = [Math.ceil(bw / 8), Math.ceil(bh / 8)];
+    pass.setPipeline(this.bloomPrep);
+    pass.setBindGroup(0, this.bloomGroups[0]);
+    pass.dispatchWorkgroups(...wg);
+    pass.setPipeline(this.bloomBlur);
+    pass.setBindGroup(0, this.bloomGroups[1]); // A → B horizontally
+    pass.dispatchWorkgroups(...wg);
+    pass.setBindGroup(0, this.bloomGroups[2]); // B → A vertically
+    pass.dispatchWorkgroups(...wg);
+    pass.end();
   }
 
   /** Draw the current average into a texture view (canvas or offscreen). */
   present(encoder: GPUCommandEncoder, target: GPUTextureView, post: PostParams) {
     if (!this.ready) return;
+    if (post.bloomMix > 0) this.encodeBloom(encoder, post);
     const buf = new ArrayBuffer(32);
     const fv = new Float32Array(buf), uv = new Uint32Array(buf);
     uv.set([this.width, this.height], 0);
     fv.set([Math.max(1, this.samples), post.exposure], 2);
     uv[4] = { none: 0, aces: 1, reinhard: 2 }[post.tonemap];
-    fv.set([post.gamma, post.vignette, 0], 5);
+    fv.set([post.gamma, post.vignette, post.bloomMix], 5);
     this.device.queue.writeBuffer(this.post, 0, buf);
     const pass = encoder.beginRenderPass({ colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(this.presentPipeline);

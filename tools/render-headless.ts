@@ -1,10 +1,12 @@
 // Render a .vox file to PNG without a browser, using Dawn (the `webgpu` npm package).
 // This is also the seed of a network render worker: same renderer, no window.
 //
-//   npm run render -- scene.vox out.png [--samples 256] [--frame 0] [--set key=value ...]
+//   npm run render -- scene.vox out.png [--samples 256] [--frame 0] [--hdr sky.hdr] [--set key=value ...]
+//   npm run render -- scene.vox frames/city_####.png --frames 0-29   (#### becomes the frame number)
 //   e.g. --set cam.yaw=-90 --set out.previewScale=1
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { PNG } from 'pngjs';
 import { create, globals } from 'webgpu';
 import { parseVox } from '../src/vox/parser';
@@ -12,6 +14,7 @@ import { buildVoxelGrid } from '../src/vox/scene';
 import { Renderer } from '../src/render/renderer';
 import { frameFromSettings, outputSize, postFromSettings } from '../src/render/params';
 import { readPixels } from '../src/render/readback';
+import { loadHdrEnvironment } from '../src/render/hdr';
 import { coreFeatures, createSettings } from '../src/features';
 import type { SettingValue } from '../src/core/settings';
 
@@ -19,18 +22,28 @@ function parseArgs(argv: string[]) {
   const pos: string[] = [];
   const sets: Record<string, string> = {};
   let samples = 128, frame = 0;
+  let hdr: string | undefined;
+  let frames: [number, number] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--samples') samples = Number(argv[++i]);
     else if (a === '--frame') frame = Number(argv[++i]);
+    else if (a === '--hdr') hdr = argv[++i];
+    else if (a === '--frames') { const [x, y] = argv[++i].split('-').map(Number); frames = [x, Number.isFinite(y) ? y : x]; }
     else if (a === '--set') { const [k, ...v] = argv[++i].split('='); sets[k] = v.join('='); }
     else pos.push(a);
   }
   if (pos.length < 2) {
-    console.error('usage: render-headless <in.vox> <out.png> [--samples N] [--frame N] [--set key=value]');
+    console.error('usage: render-headless <in.vox> <out.png> [--samples N] [--frame N | --frames A-B] [--hdr sky.hdr] [--set key=value]');
     process.exit(1);
   }
-  return { input: pos[0], output: pos[1], samples, frame, sets };
+  return { input: pos[0], output: pos[1], samples, frame, sets, hdr, frames };
+}
+
+/** frames/city_####.png → frames/city_0007.png; without #### the number goes before .png */
+function frameName(pattern: string, f: number) {
+  const n = String(f).padStart(4, '0');
+  return pattern.includes('####') ? pattern.replace('####', n) : pattern.replace(/(\.png)?$/i, `_${n}.png`);
 }
 
 export async function main() {
@@ -61,25 +74,34 @@ export async function main() {
 
   const [w, h] = outputSize(settings, [1280, 720]);
   const renderer = new Renderer(device, 'rgba8unorm');
-  renderer.setScene(grid, file.palette, file.materials);
-  renderer.resize(w, h);
-  renderer.setFrame(frameFromSettings(settings, grid));
-
-  const t0 = performance.now();
-  const batch = 8;
-  for (let done = 0; done < args.samples; done += batch) {
-    const enc = device.createCommandEncoder();
-    renderer.trace(enc, Math.min(batch, args.samples - done));
-    device.queue.submit([enc.finish()]);
-    await device.queue.onSubmittedWorkDone();
+  if (args.hdr) {
+    renderer.setEnvironment(loadHdrEnvironment(readFileSync(args.hdr)));
+    if (!args.sets['sky.mode']) settings.set('sky.mode', 'hdr');
   }
+  renderer.resize(w, h);
 
-  const px = await readPixels(renderer, postFromSettings(settings));
-  const png = new PNG({ width: w, height: h });
-  png.data.set(px.data);
-  writeFileSync(args.output, PNG.sync.write(png));
-  const secs = ((performance.now() - t0) / 1000).toFixed(1);
-  console.log(`${args.output}: ${w}×${h}, ${renderer.samples} samples, ${grid.voxelCount} voxels, ${secs}s`);
+  const [first, last] = args.frames ?? [args.frame, args.frame];
+  for (let f = first; f <= last; f++) {
+    const t0 = performance.now();
+    const g = f === args.frame ? grid : buildVoxelGrid(file, f);
+    renderer.setScene(g, file.palette, file.materials);
+    renderer.setFrame(frameFromSettings(settings, g));
+    const batch = 8;
+    for (let done = 0; done < args.samples; done += batch) {
+      const enc = device.createCommandEncoder();
+      renderer.trace(enc, Math.min(batch, args.samples - done));
+      device.queue.submit([enc.finish()]);
+      await device.queue.onSubmittedWorkDone();
+    }
+    const px = await readPixels(renderer, postFromSettings(settings));
+    const png = new PNG({ width: w, height: h });
+    png.data.set(px.data);
+    const out = args.frames ? frameName(args.output, f) : args.output;
+    mkdirSync(dirname(out) || '.', { recursive: true });
+    writeFileSync(out, PNG.sync.write(png));
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    console.log(`${out}: ${w}×${h}, ${renderer.samples} samples, ${g.voxelCount} voxels, ${secs}s`);
+  }
   device.destroy();
 }
 

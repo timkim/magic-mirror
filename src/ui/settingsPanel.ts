@@ -79,6 +79,7 @@ function control(def: SettingDef, settings: Settings): { el: HTMLElement; update
 export function buildSettingsPanels(settings: Settings, layout: Layout) {
   const updaters = new Map<string, (v: SettingValue) => void>();
   for (const group of settings.groups) {
+    if (group.hidden) continue;
     const panel = layout.addPanel(group.slot ?? 'right', group.label);
     for (const def of group.defs) {
       const c = control(def, settings);

@@ -3,7 +3,7 @@
 
 import type { Settings } from '../core/settings';
 import type { VoxelGrid } from '../vox/scene';
-import type { FrameParams, PostParams, Vec3 } from './renderer';
+import type { FrameParams, PostParams, SkyMode, Vec3 } from './renderer';
 
 const rad = (d: number) => (d * Math.PI) / 180;
 const norm = (v: Vec3): Vec3 => { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
@@ -48,7 +48,17 @@ export function frameFromSettings(s: Settings, grid: VoxelGrid): FrameParams {
       sunCosRadius: Math.cos(rad(Math.max(0.01, s.num('sun.size')) / 2)),
       sunColor: scale(s.vec('sun.color'), s.num('sun.intensity') * Math.PI),
       sunEnabled: s.bool('sun.enabled'),
+      sunDisk: s.bool('sun.disk'),
+      skyMode: s.str('sky.mode') as SkyMode,
       skyColor: scale(s.vec('sky.color'), s.num('sky.intensity')),
+      rayleigh: scale(s.vec('atm.rayleighColor'), s.num('atm.rayleighDensity')),
+      mieColor: s.vec('atm.mieColor'),
+      mieDensity: s.num('atm.mieDensity'),
+      mieG: s.num('atm.mieG'),
+      atmosphereIntensity: s.num('atm.intensity'),
+      hdrIntensity: s.num('hdr.intensity'),
+      hdrRotation: rad(s.num('hdr.rotation')),
+      horizonFade: s.num('ground.horizon'),
       background: bgMode === 'color' ? s.vec('bg.color') : null,
       ground: s.bool('ground.enabled') ? s.vec('ground.color') : null,
       groundHeight: grid.origin[2],
@@ -63,6 +73,10 @@ export function postFromSettings(s: Settings): PostParams {
     tonemap: s.str('post.tonemap') as PostParams['tonemap'],
     gamma: s.num('post.gamma'),
     vignette: s.num('post.vignette'),
+    bloomMix: s.num('bloom.mix'),
+    bloomScale: s.num('bloom.scale'),
+    bloomAspect: s.num('bloom.aspect'),
+    bloomThreshold: s.num('bloom.threshold'),
   };
 }
 

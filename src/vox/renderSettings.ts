@@ -37,13 +37,39 @@ export function settingsFromVox(file: VoxFile): Record<string, SettingValue> {
     const a = nums(sun._angle);
     if (a.length >= 2) { out['sun.pitch'] = a[0]; out['sun.yaw'] = a[1]; }
     setNum('sun.size', sun._area, (v) => v * 30); // _area is 0-1 in the UI
-    if (sun._disk !== undefined) out['sun.enabled'] = true;
+    if (sun._disk !== undefined) out['sun.disk'] = sun._disk === '1';
   }
   const sky = renderObject(file, '_uni');
   if (sky) {
     setNum('sky.intensity', sky._i);
     const c = colour(sky._k);
     if (c) out['sky.color'] = c;
+  }
+  // TODO(match): _env _mode values are inferred: 0 uniform, 1 atmosphere, 2 HDR (a file with
+  // _mode 2 also stores an _ibl image path).
+  const env = renderObject(file, '_env');
+  if (env?._mode !== undefined) out['sky.mode'] = ({ '0': 'uniform', '1': 'atmosphere', '2': 'hdr' } as Record<string, string>)[env._mode] ?? 'atmosphere';
+  const atm = renderObject(file, '_atm');
+  if (atm) {
+    setNum('atm.rayleighDensity', atm._ray_d);
+    setNum('atm.mieDensity', atm._mie_d);
+    setNum('atm.mieG', atm._mie_g);
+    const rk = colour(atm._ray_k), mk = colour(atm._mie_k);
+    if (rk) out['atm.rayleighColor'] = rk;
+    if (mk) out['atm.mieColor'] = mk;
+  }
+  const ibl = renderObject(file, '_ibl');
+  if (ibl) {
+    setNum('hdr.intensity', ibl._i);
+    const a = nums(ibl._angle);
+    if (a.length) out['hdr.rotation'] = a[0];
+  }
+  const bloom = renderObject(file, '_bloom');
+  if (bloom) {
+    setNum('bloom.mix', bloom._mix);
+    setNum('bloom.scale', bloom._scale);
+    setNum('bloom.aspect', bloom._aspect);
+    setNum('bloom.threshold', bloom._threshold);
   }
   const lens = renderObject(file, '_lens');
   if (lens) {
@@ -78,6 +104,7 @@ export function settingsFromVox(file: VoxFile): Record<string, SettingValue> {
   if (ground) {
     const c = colour(ground._color);
     if (c) out['ground.color'] = c;
+    setNum('ground.horizon', ground._hor);
   }
 
   Object.assign(out, cameraFromSlot(file, 0));

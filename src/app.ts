@@ -130,13 +130,18 @@ export class App {
     this.layout.fitStage(w, h);
   }
 
-  async savePng() {
-    if (!this.renderer.ready) return;
+  /** The current render as a PNG at full output size. */
+  async renderPng(): Promise<Blob> {
     const px = await readPixels(this.renderer, postFromSettings(this.settings));
     const c = document.createElement('canvas');
     c.width = px.width; c.height = px.height;
     c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(px.data), px.width, px.height), 0, 0);
-    const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), 'image/png'));
+    return new Promise((r) => c.toBlob((b) => r(b!), 'image/png'));
+  }
+
+  async savePng() {
+    if (!this.renderer.ready) return;
+    const blob = await this.renderPng();
     const a = document.createElement('a');
     const base = this.fileName.replace(/\.vox$/i, '') || 'render';
     a.download = `${base}_f${this.settings.num('anim.frame')}_${this.renderer.samples}spp.png`;
