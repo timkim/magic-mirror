@@ -1,5 +1,7 @@
-import './ui/styles.css';
+import './app.css';
+import { mount } from 'svelte';
 import { App } from './app';
+import AppView from './ui/App.svelte';
 import { coreFeatures } from './features';
 import { viewportFeature } from './features/viewport';
 import { compareFeature } from './features/compare';
@@ -8,12 +10,25 @@ import { environmentFeature } from './features/environment';
 import { timelineFeature } from './features/timeline';
 import { farmFeature } from './features/farm';
 
-// Order matters only for toolbar and panel placement.
+// Order matters only where features share a slot and order value.
 const features = [...coreFeatures, sceneInfoFeature, viewportFeature, environmentFeature, compareFeature, timelineFeature, farmFeature];
 
 const root = document.getElementById('app')!;
-App.create(root, features)
-  .then((app) => Object.assign(window, { app })) // handy for poking at it in the console
+App.create(features)
+  .then((app) => {
+    Object.assign(window, { app }); // handy for poking at it in the console
+    mount(AppView, { target: root, props: { app } });
+  })
   .catch((e: Error) => {
-    root.innerHTML = `<div class="mm-error"><h1>Magic Mirror can't start</h1><p>${e.message}</p></div>`;
+    root.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'p-10 max-w-xl text-foreground';
+    const h = document.createElement('h1');
+    h.className = 'text-xl font-semibold mb-2';
+    h.textContent = "Magic Mirror can't start";
+    const p = document.createElement('p');
+    p.className = 'text-muted-foreground';
+    p.textContent = e.message;
+    box.append(h, p);
+    root.append(box);
   });

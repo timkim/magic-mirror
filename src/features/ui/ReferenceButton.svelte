@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { App } from '../../app';
+  import { Button } from '$lib/components/ui/button';
+  import ImageIcon from '@lucide/svelte/icons/image';
   let { app }: { app: App } = $props();
   let input: HTMLInputElement;
 </script>
@@ -14,4 +16,4 @@
     input.value = '';
   }}
 />
-<button type="button" title="Load a MagicaVoxel render to compare against (or drop an image)" onclick={() => input.click()}>Reference…</button>
+<Button size="sm" variant="outline" title="Load a MagicaVoxel render to compare against (or drop an image)" onclick={() => input.click()}><ImageIcon />Reference</Button>

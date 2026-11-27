@@ -8,6 +8,14 @@ Goals, in order:
 2. **Be easy to extend.** New tools plug in as features without touching the core.
 3. Stability, render speed, big scenes, animation and **networked rendering**: any PC on your network can help render an animation.
 
+## Front end
+
+Magic Mirror is built with **Svelte 5 + Vite**, styled with **Tailwind CSS 4** and **[shadcn-svelte](https://www.shadcn-svelte.com)** components (the `nova` preset), and starts in **dark mode** (the sun/moon button in the toolbar switches; the choice is remembered).
+
+- `src/ui/`: the app shell (`App.svelte`), the render viewport, collapsible panels and the auto-built setting controls.
+- `src/features/ui/`: each feature's components (toolbar buttons, scene panels, timeline, Magic Prism farm panel).
+- `src/lib/components/ui/`: shadcn-svelte components, owned by this repo. Add more with `npx shadcn-svelte@latest add <name>`.
+
 ## Run it
 
 ```bash
@@ -102,7 +110,8 @@ src/
   features/   core.ts (camera, sun, sky, ground & fog, render, image), viewport.ts, compare.ts,
               sceneInfo.ts, environment.ts (HDR sky), timeline.ts, farm.ts (render farm panel)
   farm/       queue.ts (job queue and frame leases)
-  ui/         layout.ts (toolbar, docked panels, status bar), settingsPanel.ts (auto-built controls)
+  ui/         App.svelte (shell), components/ (Viewport, Panel, SettingControl), stores.ts
+  lib/        shadcn-svelte components and utils
 tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts
 rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, settings, renderer, farm)
 test-scenes/  one small scene per feature being matched
@@ -122,13 +131,14 @@ export const myFeature: Feature = {
   settings: [{ id: 'fog', label: 'Fog', defs: [
     { key: 'fog.density', label: 'Density', type: 'number', default: 0, min: 0, max: 1 },
   ]}],
-  init(app) { /* optional: add toolbar buttons, panels (app.layout.addPanel), file handlers */ },
+  ui: [{ slot: 'left', title: 'Fog tools', component: FogPanel }], // optional Svelte components
+  init(app) { /* optional: file handlers, event listeners */ },
   onSceneLoaded(file, grid, settings) { /* optional: read values from the .vox */ },
   onFrame(app, dt) { /* optional: per-frame work, e.g. animation playback */ },
 };
 ```
 
-Declared settings get UI controls automatically, and changing them restarts the progressive render (set `resetsRender: false` for display-only settings).
+Declared settings get UI controls automatically, and changing them restarts the progressive render (set `resetsRender: false` for display-only settings). A feature adds UI by listing Svelte components in `ui`, each with a slot: `toolbar`, `left` or `right` (a collapsible panel), `stage` (an overlay on the render) or `bottom` (a strip under the viewport, like the timeline). Components get the `app` prop; `settingStore(app.settings, key)` gives a two-way Svelte store for any setting.
 
 ## Roadmap
 

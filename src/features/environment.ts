@@ -3,34 +3,30 @@
 
 import type { Feature } from '../core/feature';
 import { renderObject } from '../vox/parser';
+import HdrButton from './ui/HdrButton.svelte';
 
 export const environmentFeature: Feature = {
   id: 'environment',
+  ui: [{ slot: 'toolbar', component: HdrButton, order: 10 }],
   init(app) {
-    const loadedName = () => app.environment?.name ?? '';
     const note = () => {
+      const loaded = app.environment?.name ?? '';
       const want = app.file ? renderObject(app.file, '_ibl')?._path : undefined;
-      if (app.settings.str('sky.mode') === 'hdr' && !loadedName())
-        app.layout.setStatus('hdr', want ? `Sky image ${want} not loaded: drop it here (using atmosphere)` : 'No HDR loaded (using atmosphere)');
-      else app.layout.setStatus('hdr', loadedName() ? `Sky: ${loadedName()}` : '');
+      if (app.settings.str('sky.mode') === 'hdr' && !loaded)
+        app.setStatus('hdr', want ? `Sky image ${want} not loaded: drop it here (using atmosphere)` : 'No HDR loaded (using atmosphere)');
+      else app.setStatus('hdr', loaded ? `Sky: ${loaded}` : '');
     };
-
-    const open = async (f: File) => {
-      app.layout.setStatus('hdr', `Loading ${f.name}…`);
-      app.loadEnvironment(new Uint8Array(await f.arrayBuffer()), f.name);
-    };
-    app.registerFileHandler({ accepts: (f) => f.name.toLowerCase().endsWith('.hdr'), open });
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.hdr';
-    input.hidden = true;
-    input.addEventListener('change', () => { if (input.files?.[0]) app.openFile(input.files[0]); input.value = ''; });
-    app.layout.addToolbarElement(input);
-    app.layout.addButton('HDR sky…', () => input.click(), 'Load an equirectangular .hdr image to light the scene');
-
+    app.registerFileHandler({
+      accepts: (f) => f.name.toLowerCase().endsWith('.hdr'),
+      open: async (f) => {
+        app.setStatus('hdr', `Loading ${f.name}…`);
+        app.loadEnvironment(new Uint8Array(await f.arrayBuffer()), f.name);
+      },
+    });
     app.on('sceneLoaded', note);
     app.on('environmentLoaded', note);
-    app.settings.onChange((k) => { if (k === 'sky.mode') note(); });
+    app.settings.onChange((k) => {
+      if (k === 'sky.mode') note();
+    });
   },
 };

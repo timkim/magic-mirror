@@ -1,5 +1,8 @@
 <script lang="ts">
+  // A collapsible side panel (shadcn Collapsible).
   import type { Snippet } from 'svelte';
+  import * as Collapsible from '$lib/components/ui/collapsible';
+  import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 
   let { title, collapsed = false, children }: { title: string; collapsed?: boolean; children: Snippet } = $props();
   // The prop only sets where the panel starts; after that it's the user's to open and close.
@@ -9,44 +12,14 @@
   });
 </script>
 
-<section class="panel" class:collapsed={!open}>
-  <h2><button type="button" onclick={() => (open = !open)} aria-expanded={open}>{title}</button></h2>
-  {#if open}
-    <div class="body">{@render children()}</div>
-  {/if}
-</section>
-
-<style>
-  .panel {
-    border-bottom: 1px solid var(--line);
-  }
-  h2 {
-    margin: 0;
-  }
-  h2 button {
-    all: unset;
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    padding: 8px 10px;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    cursor: pointer;
-    user-select: none;
-  }
-  h2 button::before {
-    content: '▾ ';
-  }
-  .collapsed h2 button::before {
-    content: '▸ ';
-  }
-  .body {
-    padding: 0 10px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-</style>
+<Collapsible.Root bind:open class="border-b border-border">
+  <Collapsible.Trigger
+    class="flex w-full items-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase transition-colors hover:text-foreground"
+  >
+    <ChevronRightIcon class="size-3.5 transition-transform {open ? 'rotate-90' : ''}" />
+    {title}
+  </Collapsible.Trigger>
+  <Collapsible.Content class="flex flex-col gap-2.5 px-3 pb-3">
+    {@render children()}
+  </Collapsible.Content>
+</Collapsible.Root>

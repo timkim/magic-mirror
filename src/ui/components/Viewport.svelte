@@ -86,9 +86,9 @@
   ondrop={drop}
 />
 
-<main class="viewport" class:dragging bind:this={viewport}>
+<main class="relative grid place-items-center overflow-hidden bg-background [grid-area:view] {dragging ? 'outline-2 -outline-offset-8 outline-ring outline-dashed' : ''}" bind:this={viewport}>
   <div
-    class="stage"
+    class="relative cursor-grab touch-none bg-black shadow-2xl ring-1 ring-border active:cursor-grabbing"
     style:width="{stage.w}px"
     style:height="{stage.h}px"
     role="application"
@@ -99,49 +99,14 @@
     oncontextmenu={(e) => e.preventDefault()}
     onwheel={wheel}
   >
-    <canvas bind:this={canvas}></canvas>
+    <canvas bind:this={canvas} class="absolute inset-0 block size-full"></canvas>
     {#each overlays as o, i (i)}
       <o.component {app} />
     {/each}
   </div>
   {#if !$scene}
-    <div class="hint">Drop a .vox file here, or pick a test scene</div>
+    <div class="pointer-events-none absolute text-center text-sm text-muted-foreground">
+      Drop a .vox file here, or pick a test scene
+    </div>
   {/if}
 </main>
-
-<style>
-  .viewport {
-    grid-area: view;
-    position: relative;
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-  }
-  .viewport.dragging {
-    outline: 2px dashed var(--accent);
-    outline-offset: -8px;
-  }
-  .stage {
-    position: relative;
-    background: #000;
-    box-shadow: 0 2px 16px #0008;
-    cursor: grab;
-    touch-action: none;
-  }
-  .stage:active {
-    cursor: grabbing;
-  }
-  canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-  }
-  .hint {
-    position: absolute;
-    color: var(--muted);
-    pointer-events: none;
-    font-size: 15px;
-  }
-</style>

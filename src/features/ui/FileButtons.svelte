@@ -1,16 +1,20 @@
 <script lang="ts">
   // Toolbar: open a .vox, load a built-in test scene, save the render as PNG.
   import type { App } from '../../app';
+  import { Button } from '$lib/components/ui/button';
+  import * as NativeSelect from '$lib/components/ui/native-select';
+  import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
+  import DownloadIcon from '@lucide/svelte/icons/download';
 
   let { app }: { app: App } = $props();
   const samples = import.meta.glob('../../../test-scenes/*.vox', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
   const scenes = Object.entries(samples).map(([path, url]) => ({ name: path.split('/').pop()!, url }));
   let input: HTMLInputElement;
+  let pick = $state('');
 
-  async function pick(e: Event & { currentTarget: HTMLSelectElement }) {
-    const sel = e.currentTarget;
-    const scene = scenes.find((s) => s.url === sel.value);
-    sel.value = '';
+  async function open(url: string) {
+    pick = '';
+    const scene = scenes.find((s) => s.url === url);
     if (!scene) return;
     const bytes = new Uint8Array(await (await fetch(scene.url)).arrayBuffer());
     app.openVox(bytes, scene.name);
@@ -27,9 +31,9 @@
     input.value = '';
   }}
 />
-<button type="button" title="Or drop a .vox file anywhere" onclick={() => input.click()}>Open .vox</button>
-<select onchange={pick} aria-label="Test scenes">
-  <option value="">Test scenes…</option>
-  {#each scenes as s (s.url)}<option value={s.url}>{s.name}</option>{/each}
-</select>
-<button type="button" title="Save the current render at the output size" onclick={() => app.savePng()}>Save PNG</button>
+<Button size="sm" title="Or drop a .vox file anywhere" onclick={() => input.click()}><FolderOpenIcon />Open .vox</Button>
+<NativeSelect.Root size="sm" aria-label="Test scenes" bind:value={pick} onchange={() => open(pick)}>
+  <NativeSelect.Option value="">Test scenes…</NativeSelect.Option>
+  {#each scenes as s (s.url)}<NativeSelect.Option value={s.url}>{s.name}</NativeSelect.Option>{/each}
+</NativeSelect.Root>
+<Button size="sm" variant="outline" title="Save the current render at the output size" onclick={() => app.savePng()}><DownloadIcon />Save PNG</Button>

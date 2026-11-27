@@ -1,9 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Magic Mirror</title>
+    <script>
+      // Start in dark mode for first-time visitors; a theme the user picked later is kept.
+      try {
+        if (!localStorage.getItem('mode-watcher-mode')) localStorage.setItem('mode-watcher-mode', 'dark');
+      } catch {}
+    </script>
   </head>
   <body>
     <div id="app"></div>
