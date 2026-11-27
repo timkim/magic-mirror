@@ -186,3 +186,51 @@ pub fn output_size(s: &Snapshot) -> (u32, u32) {
     let r = |v: f64| ((v * k + 0.5).floor()).max(1.0) as u32; // Math.round
     (r(base.0), r(base.1))
 }
+
+/// Camera keyframes (the `cam.keys` setting, JSON). Mirrors src/anim/camera.ts: holds before
+/// the first and after the last key; between keys position and angles interpolate linearly (or
+/// smoothstep when the earlier key's ease is "smooth", the default), distance and ortho size
+/// geometrically. Writes the result into the camera settings for `frame`.
+pub fn apply_camera_keys(s: &mut Snapshot, frame: f64) {
+    let keys: Vec<Value> = match s.0.get("cam.keys").and_then(|v| v.as_str()).and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+        Some(Value::Array(a)) => a,
+        _ => return,
+    };
+    let mut keys: Vec<&Value> = keys.iter().filter(|k| k.get("frame").and_then(|f| f.as_f64()).is_some()).collect();
+    if keys.is_empty() {
+        return;
+    }
+    keys.sort_by(|a, b| a["frame"].as_f64().unwrap().partial_cmp(&b["frame"].as_f64().unwrap()).unwrap());
+    let fr = |k: &Value| k["frame"].as_f64().unwrap();
+    let (mut a, mut b) = (keys[0], keys[0]);
+    if frame <= fr(keys[0]) {
+    } else if frame >= fr(keys[keys.len() - 1]) {
+        a = keys[keys.len() - 1];
+        b = a;
+    } else {
+        for i in 0..keys.len() - 1 {
+            if frame >= fr(keys[i]) && frame < fr(keys[i + 1]) {
+                a = keys[i];
+                b = keys[i + 1];
+                break;
+            }
+        }
+    }
+    let mut t = if std::ptr::eq(a, b) { 0.0 } else { (frame - fr(a)) / (fr(b) - fr(a)) };
+    if a.get("ease").and_then(|e| e.as_str()).unwrap_or("smooth") == "smooth" {
+        t = t * t * (3.0 - 2.0 * t);
+    }
+    let n = |k: &Value, f: &str| k.get(f).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let lerp = |x: f64, y: f64| x + (y - x) * t;
+    let glerp = |x: f64, y: f64| (x.max(1e-3).ln() + (y.max(1e-3).ln() - x.max(1e-3).ln()) * t).exp();
+    let tv = |k: &Value, i: usize| k.get("target").and_then(|v| v.get(i)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let target: Vec<f64> = (0..3).map(|i| lerp(tv(a, i), tv(b, i))).collect();
+    let yaw = lerp(n(a, "yaw"), n(b, "yaw"));
+    let wrapped = (((yaw + 180.0) % 360.0) + 360.0) % 360.0 - 180.0;
+    s.set("cam.target", serde_json::json!(target));
+    s.set("cam.yaw", serde_json::json!(wrapped));
+    s.set("cam.pitch", serde_json::json!(lerp(n(a, "pitch"), n(b, "pitch"))));
+    s.set("cam.distance", serde_json::json!(glerp(n(a, "distance"), n(b, "distance"))));
+    s.set("cam.fov", serde_json::json!(lerp(n(a, "fov"), n(b, "fov"))));
+    s.set("cam.orthoSize", serde_json::json!(glerp(n(a, "orthoSize"), n(b, "orthoSize"))));
+}

@@ -10,7 +10,8 @@ import { frameFromSettings, outputSize, postFromSettings } from './render/params
 import { readPixels } from './render/readback';
 import { loadHdrEnvironment } from './render/hdr';
 import { parseVox } from './vox/parser';
-import { SceneBaker, type VoxelGrid } from './vox/scene';
+import { SceneBaker, animationLength, type VoxelGrid } from './vox/scene';
+import { applyCameraKeys, getKeys, keysToVox, lastKeyFrame } from './anim/camera';
 import type { VoxFile } from './vox/types';
 import { serializeVox } from './vox/serialize';
 import { emptyScene } from './vox/empty';
@@ -103,7 +104,10 @@ export class App {
     );
     this.settings.onChange((key) => {
       const def = this.settings.def(key);
-      if (key === 'anim.frame') this.rebuildGrid();
+      if (key === 'anim.frame') {
+        this.rebuildGrid();
+        applyCameraKeys(this.settings);
+      } else if (key === 'cam.keys') applyCameraKeys(this.settings);
       else if (def && def.resetsRender !== false) this.frameDirty = true;
     });
     this.registerFileHandler({
@@ -202,10 +206,19 @@ export class App {
     this.setStatus('msg', `${name}: ${this.grid.voxelCount.toLocaleString()} voxels`);
   }
 
-  /** The scene as .vox bytes, including any edits. */
+  /** Last frame of the timeline: scene keyframes, camera keyframes or the chosen end. */
+  animationEnd(): number {
+    if (!this.file) return 0;
+    return Math.max(animationLength(this.file), lastKeyFrame(getKeys(this.settings)), this.settings.num('anim.end'));
+  }
+
+  /** The scene as .vox bytes, including any edits (and camera keyframes). */
   voxBytes(): Uint8Array | null {
     if (!this.file) return null;
-    if (!this.fileBytes || this.history.dirty) this.fileBytes = serializeVox(this.file);
+    if (!this.fileBytes || this.history.dirty) {
+      keysToVox(this.file, this.settings.str('cam.keys'), this.settings.num('anim.end'));
+      this.fileBytes = serializeVox(this.file);
+    }
     this.history.dirty = false;
     return this.fileBytes;
   }

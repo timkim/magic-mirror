@@ -20,7 +20,10 @@ export interface ColorDef extends BaseDef<[number, number, number]> { type: 'col
 export interface SelectDef extends BaseDef<string> { type: 'select'; options: { value: string; label: string }[] }
 export interface Vec3Def extends BaseDef<[number, number, number]> { type: 'vec3'; step?: number }
 
-export type SettingDef = NumberDef | BoolDef | ColorDef | SelectDef | Vec3Def;
+/** Free text (e.g. JSON); no automatic control, so put these in a hidden group. */
+export interface TextDef extends BaseDef<string> { type: 'text' }
+
+export type SettingDef = NumberDef | BoolDef | ColorDef | SelectDef | Vec3Def | TextDef;
 
 export interface SettingGroup {
   id: string;

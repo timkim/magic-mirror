@@ -19,7 +19,7 @@ export const ASSISTANT_GUIDE = `You are working inside Magic Mirror, a MagicaVox
 - Start with get_scene. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
 - To build something new, add_model with a size that fits it, then draw into it. Put its bottom on the ground: position z = size z / 2 plus the ground height that get_scene reports.
 - Pick colours from the palette that get_scene describes, or set new ones in unused slots with set_palette (never recolour a slot the scene already uses unless asked).
-- Animation: objects move between keyframes with set_object_animation; MagicaVoxel interpolates position linearly. The camera, sun, sky and render settings are settings (list_settings, set_settings); set_frame shows a frame.
+- Animation: objects move between keyframes with set_object_animation (MagicaVoxel interpolates position linearly). The camera animates with set_camera_keyframes (orbits, push-ins, crane moves); get_scene shows the keys and the timeline end. The sun, sky and render settings are settings (list_settings, set_settings); set_frame shows a frame. To check a camera move, preview a few frames (set_frame, then render_preview).
 - After visible changes, call render_preview and look at the result before saying you're done. Keep previews small and samples low unless asked.
 - Everything you do is one undoable step per tool call. Keep replies short: say what you changed.`;
 
@@ -136,6 +136,32 @@ export const TOOL_DEFS: ToolDef[] = [
     name: 'set_settings',
     description: 'Change settings by key, e.g. {"cam.yaw": 30, "sun.pitch": 15, "sky.mode": "atmosphere"}. Colours are [r, g, b] in 0-1. One undo step.',
     inputSchema: { type: 'object', properties: { values: { type: 'object' } }, required: ['values'] },
+  },
+  {
+    name: 'set_camera_keyframes',
+    description:
+      'Animate the camera. Each key: frame plus any of target [x,y,z] (orbit centre), yaw, pitch, distance, fov, ortho_size, ease ("smooth" default, or "linear" from this key to the next). ' +
+      'Missing values carry over from the previous key (or the current camera). Yaw is in degrees and not wrapped: yaw 0 at frame 0 to 360 at frame 119 with ease linear is one full orbit. ' +
+      'Replaces all camera keys unless replace is false; an empty list removes them. end_frame sets the last frame of the timeline.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        keyframes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              frame: { type: 'integer' }, target: vec3('Point the camera orbits and looks at'), yaw: { type: 'number' }, pitch: { type: 'number' },
+              distance: { type: 'number' }, fov: { type: 'number' }, ortho_size: { type: 'number' }, ease: { type: 'string', enum: ['smooth', 'linear'] },
+            },
+            required: ['frame'],
+          },
+        },
+        replace: { type: 'boolean' },
+        end_frame: { type: 'integer' },
+      },
+      required: ['keyframes'],
+    },
   },
   {
     name: 'set_frame',

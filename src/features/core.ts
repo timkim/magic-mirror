@@ -7,6 +7,7 @@ import type { Settings } from '../core/settings';
 import type { VoxFile } from '../vox/types';
 import type { VoxelGrid } from '../vox/scene';
 import { frameScene } from '../render/params';
+import { applyCameraKeys, keysFromVox } from '../anim/camera';
 
 const scenes = new WeakMap<Settings, { file: VoxFile; grid: VoxelGrid }>();
 const watched = new WeakSet<Settings>();
@@ -51,6 +52,11 @@ export const cameraFeature: Feature = {
     }
     const wanted = settings.str('cam.slot');
     settings.set('cam.slot', wanted !== 'auto' && slots.includes(Number(wanted)) ? wanted : 'auto');
+    // Camera keyframes saved by Magic Mirror.
+    const saved = keysFromVox(file);
+    settings.set('anim.end', saved.end);
+    settings.set('cam.keys', saved.keys);
+    applyCameraKeys(settings);
   },
 };
 
@@ -147,6 +153,8 @@ export const outputFeature: Feature = {
         { key: 'anim.playSamples', label: 'Samples while playing', type: 'number', default: 4, min: 1, max: 4096, step: 1, resetsRender: false },
         { key: 'anim.loop', label: 'Loop', type: 'bool', default: true, resetsRender: false },
         { key: 'anim.exportSamples', label: 'Samples per exported frame', type: 'number', default: 256, min: 1, max: 65536, step: 1, resetsRender: false },
+        { key: 'anim.end', label: 'Timeline end', type: 'number', default: 0, min: 0, max: 10000, step: 1, resetsRender: false, help: 'Last frame, when it should go past the scene\'s own keyframes' },
+        { key: 'cam.keys', label: 'Camera keyframes', type: 'text', default: '[]', help: 'JSON list of camera keys (see src/anim/camera.ts)' },
       ],
     },
     {

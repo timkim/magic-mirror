@@ -5,7 +5,6 @@
   import type { App } from '../../app';
   import { download } from '../../app';
   import { settingStore } from '../../ui/stores';
-  import { animationLength } from '../../vox/scene';
   import { Button } from '$lib/components/ui/button';
   import { Slider } from '$lib/components/ui/slider';
   import { Input } from '$lib/components/ui/input';
@@ -18,6 +17,11 @@
   import PauseIcon from '@lucide/svelte/icons/pause';
   import FilmIcon from '@lucide/svelte/icons/film';
   import XIcon from '@lucide/svelte/icons/x';
+  import VideoIcon from '@lucide/svelte/icons/video';
+  import TrashIcon from '@lucide/svelte/icons/trash-2';
+  import * as NativeSelect from '$lib/components/ui/native-select';
+  import { captureKey, getKeys, withKey } from '../../anim/camera';
+  import { setCameraKeys, setTimelineEnd } from '../../edit/cameraKeys';
 
   let { app }: { app: App } = $props();
   const s = app.settings;
@@ -27,8 +31,26 @@
   const playSamples = settingStore<number>(s, 'anim.playSamples');
   const exportSamples = settingStore<number>(s, 'anim.exportSamples');
   const loop = settingStore<boolean>(s, 'anim.loop');
+  const camKeys = settingStore<string>(s, 'cam.keys');
+  const end = settingStore<number>(s, 'anim.end');
+  const history = app.history.state;
 
-  let length = $derived($scene ? animationLength($scene.file) : 0);
+  let keys = $derived.by(() => { void $camKeys; return getKeys(s); });
+  let length = $derived.by(() => { void $history; void $end; void $camKeys; return $scene ? app.animationEnd() : 0; });
+  let current = $derived(keys.find((k) => k.frame === $frame));
+
+  function keyCamera() {
+    const prev = [...keys].reverse().find((k) => k.frame <= $frame) ?? keys[0];
+    const k = captureKey(s, $frame, prev?.yaw);
+    if (current?.ease) k.ease = current.ease;
+    setCameraKeys(app, withKey(keys, k), current ? `Update camera key ${$frame}` : `Camera key ${$frame}`);
+  }
+  function deleteKey() {
+    setCameraKeys(app, keys.filter((k) => k.frame !== $frame), `Delete camera key ${$frame}`);
+  }
+  function setEase(ease: string) {
+    if (current) setCameraKeys(app, keys.map((k) => (k === current ? { ...k, ease: ease as 'smooth' | 'linear' } : k)), `Camera key ${$frame}: ${ease}`);
+  }
   let playing = $state(false);
   let exporting = $state(false);
   let cancelExport = false;
@@ -50,7 +72,8 @@
   onMount(() => {
     const offScene = app.on('sceneLoaded', (file) => {
       playing = false;
-      if (s.num('anim.frame') > animationLength(file)) s.set('anim.frame', 0);
+      void file;
+      if (s.num('anim.frame') > app.animationEnd()) s.set('anim.frame', 0);
     });
     // Playback moves on once the frame has enough samples, at most `fps` times a second.
     const offFrame = app.on('frame', () => {
@@ -73,13 +96,14 @@
   });
 
   function keydown(e: KeyboardEvent) {
-    if (length <= 0 || (e.target as HTMLElement).closest('input, select, textarea, [contenteditable]')) return;
+    if (!$scene || (e.target as HTMLElement).closest('input, select, textarea, [contenteditable]')) return;
     if (e.key === ' ') {
       e.preventDefault();
       togglePlay();
     }
     if (e.key === ',') setFrame($frame - 1);
     if (e.key === '.') setFrame($frame + 1);
+    if (e.key === 'k' && !e.ctrlKey && !e.metaKey) keyCamera();
   }
 
   const waitFor = (cond: () => boolean) =>
@@ -138,7 +162,7 @@
 
 <svelte:window onkeydown={keydown} />
 
-{#if length > 0}
+{#if $scene}
   <div class="flex items-center gap-1.5 border-t border-border px-3 py-2">
     <Button variant="ghost" size="icon-sm" title="First frame" aria-label="First frame" onclick={() => setFrame(0)}><SkipBackIcon /></Button>
     <Button variant="ghost" size="icon-sm" title="Previous frame (,)" aria-label="Previous frame" onclick={() => setFrame($frame - 1)}><StepBackIcon /></Button>
@@ -148,8 +172,34 @@
     <Button variant="ghost" size="icon-sm" title="Next frame (.)" aria-label="Next frame" onclick={() => setFrame($frame + 1)}><StepForwardIcon /></Button>
     <Button variant="ghost" size="icon-sm" title="Last frame" aria-label="Last frame" onclick={() => setFrame(length)}><SkipForwardIcon /></Button>
 
-    <Slider type="single" min={0} max={length} step={1} value={$frame} onValueChange={(v: number) => setFrame(v)} class="mx-2 flex-1" aria-label="Frame" />
+    <div class="relative mx-2 flex-1">
+      <Slider type="single" min={0} max={Math.max(1, length)} step={1} value={$frame} onValueChange={(v: number) => setFrame(v)} disabled={length <= 0} aria-label="Frame" />
+      <!-- Camera keyframes -->
+      {#each keys as k (k.frame)}
+        <button
+          type="button"
+          class="absolute -top-3 size-2.5 -translate-x-1/2 rotate-45 border border-background {k.frame === $frame ? 'bg-amber-400' : 'bg-amber-600/80 hover:bg-amber-400'}"
+          style:left="{(k.frame / Math.max(1, length)) * 100}%"
+          title="Camera key at frame {k.frame} ({k.ease ?? 'smooth'})"
+          aria-label="Go to camera key {k.frame}"
+          onclick={() => setFrame(k.frame)}
+        ></button>
+      {/each}
+    </div>
     <span class="min-w-16 text-center text-xs tabular-nums">{$frame} / {length}</span>
+    <label class="flex items-center gap-1.5 text-xs text-muted-foreground" title="Last frame of the timeline (it also grows to fit scene and camera keyframes)">
+      End <Input type="number" min={0} value={length} onchange={(e: Event & { currentTarget: HTMLInputElement }) => setTimelineEnd(app, Number(e.currentTarget.value) || 0)} class={numberField} />
+    </label>
+    <Button size="sm" variant={current ? 'secondary' : 'outline'} title="Key the camera at this frame (K). Move the camera, then press again to update it." onclick={keyCamera}>
+      <VideoIcon />{current ? 'Update key' : 'Key camera'}
+    </Button>
+    {#if current}
+      <NativeSelect.Root size="sm" value={current.ease ?? 'smooth'} onchange={(e: Event & { currentTarget: HTMLSelectElement }) => setEase(e.currentTarget.value)} aria-label="Easing to the next key" title="How the camera moves from this key to the next">
+        <NativeSelect.Option value="smooth">Smooth</NativeSelect.Option>
+        <NativeSelect.Option value="linear">Linear</NativeSelect.Option>
+      </NativeSelect.Root>
+      <Button size="icon-sm" variant="ghost" title="Delete this camera key" aria-label="Delete camera key" onclick={deleteKey}><TrashIcon /></Button>
+    {/if}
 
     <label class="flex items-center gap-1.5 text-xs text-muted-foreground" title="Playback speed (frames per second, at most)">
       FPS <Input type="number" min={1} max={60} value={$fps} onchange={(e: Event & { currentTarget: HTMLInputElement }) => ($fps = Math.max(1, Number(e.currentTarget.value) || 1))} class={numberField} />

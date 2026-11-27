@@ -48,6 +48,7 @@ impl Session {
         let boxes = self.baker.set_time(frame);
         self.renderer.update_regions(&self.baker.grid, &boxes);
         self.renderer.samples = 0;
+        settings::apply_camera_keys(&mut self.settings, frame as f64);
         let f = settings::frame(&self.settings, self.baker.grid.origin[2] as f64);
         let mut done = 0;
         while done < samples {

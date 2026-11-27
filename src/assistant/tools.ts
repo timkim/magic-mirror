@@ -7,6 +7,8 @@ import { decodeRotation, IDENTITY_ROT } from '../vox/parser';
 import { animationLength, placementBounds } from '../vox/scene';
 import type { Rot3, TransformFrame } from '../vox/types';
 import type { SettingValue } from '../core/settings';
+import { captureKey, getKeys, withKey, type CameraKey } from '../anim/camera';
+import { setCameraKeys, setTimelineEnd } from '../edit/cameraKeys';
 
 type V3 = [number, number, number];
 export type McpContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
@@ -64,7 +66,8 @@ function sceneSummary(app: App) {
     voxels: grid.voxelCount,
     world_bounds: [grid.origin, grid.origin.map((v, i) => v + grid.dims[i] - 1)],
     ground_height: grid.origin[2],
-    animation: { last_frame: animationLength(file), current_frame: s.num('anim.frame'), fps: s.num('anim.fps') },
+    animation: { last_frame: app.animationEnd(), scene_keyframes_end: animationLength(file), current_frame: s.num('anim.frame'), fps: s.num('anim.fps') },
+    camera_keyframes: getKeys(s),
     objects,
     objects_listed: `${objects.length} of ${placed.length}`,
     palette_in_use: [...used.entries()].sort((a, b) => b[1] - a[1]).map(([i, n]) => ({ index: i, hex: hex(file.palette, i), voxels: n, material: file.materials.get(i)?._type?.slice(1) ?? 'diffuse' })),
@@ -223,7 +226,7 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
       if (!keys.length) throw new Error('Give at least one keyframe.');
       const frames: TransformFrame[] = keys.map((k) => ({ frame: Math.max(0, Math.round(k.frame)), rotation: rotZ(k.rotation_z), translation: k.position.map(Math.round) }));
       ed.setTransform(a.object_id, frames, label(`animate object (${frames.length} keys)`));
-      return text(`Set ${frames.length} keyframes; the animation now ends at frame ${animationLength(app.file!)}.`);
+      return text(`Set ${frames.length} keyframes; the animation now ends at frame ${app.animationEnd()}.`);
     }
 
     case 'set_palette': {
@@ -272,6 +275,27 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
       return text({ changed: known, unknown_keys: unknown.length ? unknown : undefined });
     }
 
+    case 'set_camera_keyframes': {
+      need(app);
+      const st = app.settings;
+      let keys: CameraKey[] = a.replace === false ? getKeys(st) : [];
+      const sorted = [...(a.keyframes ?? [])].sort((p, q) => p.frame - q.frame);
+      for (const k of sorted) {
+        // Anything left out comes from the previous key, or the current camera for the first.
+        const prev = [...keys].reverse().find((x) => x.frame <= k.frame) ?? captureKey(st, k.frame);
+        keys = withKey(keys, {
+          frame: Math.max(0, Math.round(k.frame)),
+          target: (k.target ?? prev.target).map(Number) as [number, number, number],
+          yaw: k.yaw ?? prev.yaw, pitch: k.pitch ?? prev.pitch, distance: k.distance ?? prev.distance,
+          fov: k.fov ?? prev.fov, orthoSize: k.ortho_size ?? prev.orthoSize, ease: k.ease ?? 'smooth',
+        });
+      }
+      setCameraKeys(app, keys, label(keys.length ? `camera keys (${keys.length})` : 'remove camera keys'));
+      if (a.end_frame !== undefined) setTimelineEnd(app, a.end_frame, label(`timeline end ${a.end_frame}`));
+      app.settings.set('anim.frame', app.settings.num('anim.frame')); // show the keyed camera now
+      return text({ camera_keyframes: keys.length, timeline_end: app.animationEnd() });
+    }
+
     case 'set_frame':
       app.settings.set('anim.frame', Math.max(0, Math.round(a.frame)));
       return text(`Showing frame ${app.settings.num('anim.frame')}.`);
@@ -296,7 +320,8 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
 
     case 'render_on_farm': {
       const file = need(app);
-      const last = animationLength(file);
+      void file;
+      const last = app.animationEnd();
       const { farmMessage, sendJob } = await import('../features/farmClient');
       await sendJob(app, { firstFrame: a.first_frame ?? 0, lastFrame: a.last_frame ?? last, samples: a.samples ?? 256, scale: a.scale ?? 1 });
       return text(get(farmMessage) || 'Sent.');

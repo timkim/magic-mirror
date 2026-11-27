@@ -66,6 +66,12 @@ The **Palette** panel edits colours and materials (diffuse, metal, glass, emit, 
 
 Every change goes through one undo history, and the same calls the tools use are there for scripts (and the coming assistant): `app.editor.setVoxels(modelId, [[x, y, z, colour], …])`, `setColor`, `setMaterial` and `addModel`.
 
+## Camera keyframes
+
+The timeline animates the camera. Pick a frame, frame the shot (drag, pan, zoom, or the Camera panel), and press **Key camera** (K). Keys show as diamonds above the timeline; click one to jump to it, move the camera and press **Update key**, choose **Smooth** or **Linear** for the move to the next key, or delete it. **End** sets the timeline length for static scenes. Yaw isn't wrapped between keys, so yaw 0 at frame 0 and 360 at the last frame (Linear) is one full orbit, and distance and zoom change evenly.
+
+Keys travel with farm jobs, so the Node and Rust workers render the same moves, and **Save .vox** stores them in the file (as an extra render-settings entry MagicaVoxel ignores) so they come back when you reopen it. The assistant can set them too ("slow orbit over 120 frames, then push in").
+
 ## Assistant (Claude)
 
 The **Assistant** panel lets you ask Claude to change the scene ("add a lighthouse on the hill", "make the windows glow", "slow orbit at golden hour, 60 frames"). Claude looks at the scene, builds and edits models, sets colours, materials, keyframes and render settings, renders a preview to check its work, and can send the job to the farm. Every change lands in the undo history, and each reply has **Undo this reply**.
@@ -141,6 +147,7 @@ src/
               updates only what moved between animation frames),
               serialize.ts (writes a scene back to .vox), writer.ts (test files), empty.ts
               (new scenes), renderSettings.ts (file settings → app settings)
+  anim/       camera.ts (camera keyframes: interpolation, saving in the .vox)
   assistant/  toolDefs.ts (the tools Claude can use), tools.ts (runs them), client.ts (chat panel
               and the tab's connection to the bridge)
   edit/       editor.ts (voxel tools and the scripting API), history.ts (undo/redo),
@@ -185,8 +192,9 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
-- **Assistant:** a hosted MCP connector with sign-in (Cloudflare), so claude.ai on any device can drive Magic Mirror; camera keyframes as a tool.
-- **Editor:** resize, move and rotate models; layers; line and sphere brushes; camera keyframes on the timeline.
+- **Assistant:** a hosted MCP connector with sign-in (Cloudflare), so claude.ai on any device can drive Magic Mirror.
+- **Editor:** resize, move and rotate models; layers; line and sphere brushes.
+- **Camera:** import and export MagicaVoxel-Animation-Script camera files; roll and focus keys.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
 - **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.
 - **Big scenes:** sparse bricks instead of the dense grid; streaming.

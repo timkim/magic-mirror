@@ -13,6 +13,7 @@ import { parseVox } from '../src/vox/parser';
 import { SceneBaker } from '../src/vox/scene';
 import { Renderer } from '../src/render/renderer';
 import { frameFromSettings, outputSize, postFromSettings } from '../src/render/params';
+import { applyCameraKeys } from '../src/anim/camera';
 import { readPixels } from '../src/render/readback';
 import { loadHdrEnvironment } from '../src/render/hdr';
 import { coreFeatures, createSettings } from '../src/features';
@@ -96,6 +97,8 @@ export async function main() {
     const g = grid;
     if (f === first) renderer.setScene(g, file.palette, file.materials);
     else renderer.updateRegions(baker.setTime(f));
+    settings.set('anim.frame', f);
+    applyCameraKeys(settings); // camera keyframes, if the scene or settings have any
     renderer.setFrame(frameFromSettings(settings, g));
     const batch = 8;
     for (let done = 0; done < args.samples; done += batch) {

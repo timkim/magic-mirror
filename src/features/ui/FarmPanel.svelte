@@ -3,7 +3,6 @@
   // this tab join the farm as a worker.
   import { onMount } from 'svelte';
   import type { App } from '../../app';
-  import { animationLength } from '../../vox/scene';
   import { farmMessage, farmStatus, farmUrl, joined, saveSettings, sendJob, setJoined, videoUrl, watchStatus } from '../farmClient';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -25,7 +24,7 @@
   $effect(() => {
     if ($scene) {
       first = 0;
-      last = animationLength($scene.file);
+      last = app.animationEnd();
     }
   });
 
