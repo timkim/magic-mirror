@@ -1,4 +1,4 @@
-// Render farm panel: send the open animation to the coordinator, watch progress, and let this
+// Magic Prism render farm panel: send the open animation to the coordinator, watch progress, and let this
 // browser tab join the farm as a worker (any PC with a WebGPU browser can help render).
 
 import type { Feature } from '../core/feature';
@@ -17,7 +17,7 @@ const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
 export const farmFeature: Feature = {
   id: 'farm',
   init(app) {
-    const panel = app.layout.addPanel('left', 'Render farm', { collapsed: true, order: 5 });
+    const panel = app.layout.addPanel('left', 'Magic Prism farm', { collapsed: true, order: 5 });
     const b = panel.body;
     const saved = (() => { try { return localStorage.getItem('mm.farm.url'); } catch { return null; } })();
     b.innerHTML = `
@@ -26,7 +26,7 @@ export const farmFeature: Feature = {
       <label class="mm-row" title="Samples per frame"><span class="mm-label">Samples</span><input class="mm-spp" type="number" min="1" value="256"></label>
       <label class="mm-row" title="1 = full output resolution"><span class="mm-label">Scale</span><input class="mm-scale" type="number" min="0.1" max="1" step="0.05" value="1"></label>
       <button class="mm-send">Send to farm</button>
-      <button class="mm-save-settings" title="Save every setting as JSON, for: mm-worker render scene.vox out.png --settings settings.json">Save settings</button>
+      <button class="mm-save-settings" title="Save every setting as JSON, for: prism render scene.vox out.png --settings settings.json">Save settings</button>
       <label class="mm-row" title="Render frames for the farm in this tab"><span class="mm-label">Join as worker</span><input class="mm-join" type="checkbox"></label>
       <div class="mm-farm-status mm-muted">Not connected.</div>`;
     const $ = <T extends HTMLElement>(sel: string) => b.querySelector(sel) as T;

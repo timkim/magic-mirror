@@ -1,4 +1,4 @@
-// Magic Mirror render farm worker (no browser). Asks the coordinator for frames, renders each
+// Magic Prism render farm worker in Node (no browser). The native Rust worker, `prism`, is faster. Asks the coordinator for frames, renders each
 // one with this PC's GPU, and sends the PNGs back. Run one per PC:
 //
 //   npm run worker -- http://192.168.1.20:8080 [--name living-room-pc] [--once]
@@ -64,7 +64,7 @@ export async function runWorker(base: string, opts: { name?: string; once?: bool
   const log = opts.log ?? ((s: string) => console.log(s));
   const id = randomUUID();
   const name = opts.name ?? hostname();
-  const cache = join(tmpdir(), `magic-mirror-worker-${id}`);
+  const cache = join(tmpdir(), `magic-prism-worker-${id}`);
   mkdirSync(cache, { recursive: true });
   const api = (path: string, method = 'GET', body?: Uint8Array | string, type?: string) => request(new URL(path, base), method, body, type);
   const download = async (path: string, to: string) => {

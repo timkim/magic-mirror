@@ -56,7 +56,7 @@ impl Renderer {
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("magic-mirror"),
+            label: Some("magic-prism"),
             required_limits: adapter.limits(),
             ..Default::default()
         }))

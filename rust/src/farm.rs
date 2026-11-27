@@ -1,4 +1,4 @@
-//! Render farm client: the same protocol as tools/worker.ts, but the GPU and the scene stay
+//! Magic Prism render farm client: the same protocol as tools/worker.ts, but the GPU and the scene stay
 //! loaded between frames, so only the first frame of a job pays for loading.
 
 use crate::renderer::Renderer;

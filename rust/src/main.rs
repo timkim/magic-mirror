@@ -1,11 +1,11 @@
-//! Magic Mirror native worker.
+//! Magic Prism: the native renderer and render farm worker behind Magic Mirror.
 //!
-//!   mm-worker http://192.168.1.20:8080 [--name office-pc] [--once]
+//!   prism http://192.168.1.20:8080 [--name office-pc] [--once]
 //!       Join a render farm: take frames from the coordinator, render, send PNGs back.
 //!
-//!   mm-worker render scene.vox out.png --settings snapshot.json [--frame N | --frames A-B]
+//!   prism render scene.vox out.png --settings snapshot.json [--frame N | --frames A-B]
 //!             [--samples N] [--hdr sky.hdr] [--set key=value ...]
-//!       Render frames locally. `snapshot.json` is the app's settings (Render farm panel →
+//!       Render frames locally. `snapshot.json` is the app's settings (Magic Prism farm panel →
 //!       "Save settings"). With --frames, `####` in the output name becomes the frame number.
 
 mod farm;
@@ -105,7 +105,7 @@ fn render_cmd(args: &[String]) -> Result<(), String> {
         i += 1;
     }
     if pos.len() < 2 {
-        return Err("usage: mm-worker render <scene.vox> <out.png> --settings snapshot.json [--frame N | --frames A-B] [--samples N] [--hdr sky.hdr] [--set key=value]".into());
+        return Err("usage: prism render <scene.vox> <out.png> --settings snapshot.json [--frame N | --frames A-B] [--samples N] [--hdr sky.hdr] [--set key=value]".into());
     }
     let mut snap = match &settings_path {
         Some(p) => {
@@ -158,7 +158,7 @@ fn main() {
     let result = match args.first().map(|s| s.as_str()) {
         Some("render") => render_cmd(&args[1..]),
         Some(url) if url.starts_with("http://") || url.starts_with("https://") => farm::run(url, &args[1..]),
-        _ => Err("usage:\n  mm-worker <coordinator-url> [--name NAME] [--once]\n  mm-worker render <scene.vox> <out.png> --settings snapshot.json [options]".into()),
+        _ => Err("usage:\n  prism <coordinator-url> [--name NAME] [--once]\n  prism render <scene.vox> <out.png> --settings snapshot.json [options]".into()),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

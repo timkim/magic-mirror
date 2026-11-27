@@ -1,6 +1,7 @@
 # Magic Mirror
 
-A WebGPU viewer and path tracer for MagicaVoxel `.vox` scenes. It runs in the browser with nothing to install.
+**Magic Mirror** is the web interface: a browser viewer and editor for MagicaVoxel `.vox` scenes, with nothing to install.
+**Magic Prism** is the render technology underneath it: the WebGPU path tracer, the render farm (coordinator and workers) and the native `prism` worker.
 
 Goals, in order:
 1. **Match MagicaVoxel's look.**
@@ -38,7 +39,7 @@ npm run build                # static build in dist/
 
 `npm run render` renders with no browser through Dawn (the `webgpu` npm package). The Node tools are bundled with esbuild and run with plain `node`, because Dawn's GPU threads don't get along with `tsx`.
 
-## Render farm (network rendering)
+## Magic Prism render farm (network rendering)
 
 Spread an animation's frames across every PC on your home network.
 
@@ -48,10 +49,10 @@ Spread an animation's frames across every PC on your home network.
    npm run farm       # prints the address other PCs should use, e.g. http://192.168.1.20:8080
    ```
 2. **On each PC that should help render**, either:
-   - open that address in Chrome or Edge, expand **Render farm** in the left column and tick **Join as worker** (keep the tab visible), or
+   - open that address in Chrome or Edge, expand **Magic Prism farm** in the left column and tick **Join as worker** (keep the tab visible), or
    - run a worker with no browser: `npm run worker -- http://192.168.1.20:8080 --name office-pc`
-   - or run the native worker: `mm-worker http://192.168.1.20:8080` (see below)
-3. **Send a job** from any copy of the app: open the scene, set it up (camera slot, HDR sky, settings), expand **Render farm**, choose frames, samples and scale, and press **Send to farm**.
+   - or run the native worker: `prism http://192.168.1.20:8080` (see below)
+3. **Send a job** from any copy of the app: open the scene, set it up (camera slot, HDR sky, settings), expand **Magic Prism farm**, choose frames, samples and scale, and press **Send to farm**.
 
 Workers take one frame at a time, so faster PCs simply do more. A frame that isn't returned within 10 minutes (`--lease 600`) goes to another worker, and a headless worker renders each frame in a fresh process so a GPU crash only costs that frame. Finished frames land in `farm-output/<job>/<name>_0000.png`; when every frame is in, the coordinator makes an `.mp4` if `ffmpeg` is installed, and the panel shows a **video** link. The coordinator has no login, so only run it on a network you trust.
 
@@ -71,19 +72,19 @@ Workers take one frame at a time, so faster PCs simply do more. A frame that isn
 
 The **File render settings** panel lists the raw `rOBJ`/`rCAM` dictionaries stored in the open file, so you can see which keys MagicaVoxel wrote.
 
-## Native worker (Rust)
+## Native Magic Prism worker (Rust)
 
-`rust/` is a native renderer and farm worker built on [wgpu](https://wgpu.rs) (Vulkan, DirectX 12 or Metal). It runs the **same WGSL shaders** as the app (extracted from `src/render/shaders` at build time), so its frames match the browser and Node renderers pixel for pixel. Compared with the Node worker it keeps the GPU and the scene loaded between frames instead of reloading for every frame, needs no Node install, and is one file you can copy to each PC.
+`rust/` is `prism`, the native renderer and farm worker, built on [wgpu](https://wgpu.rs) (Vulkan, DirectX 12 or Metal). It runs the **same WGSL shaders** as the app (extracted from `src/render/shaders` at build time), so its frames match the browser and Node renderers pixel for pixel. Compared with the Node worker it keeps the GPU and the scene loaded between frames instead of reloading for every frame, needs no Node install, and is one file you can copy to each PC.
 
 ```bash
 cd rust
-cargo build --release          # → rust/target/release/mm-worker (mm-worker.exe on Windows)
+cargo build --release          # → rust/target/release/prism (prism.exe on Windows)
 
 # join a render farm
-./target/release/mm-worker http://192.168.1.20:8080 --name office-pc
+./target/release/prism http://192.168.1.20:8080 --name office-pc
 
-# render locally with the app's settings (Render farm panel → Save settings)
-./target/release/mm-worker render city.vox out/city_####.png --settings city-settings.json --frames 0-29 --samples 256
+# render locally with the app's settings (Magic Prism farm panel → Save settings)
+./target/release/prism render city.vox out/city_####.png --settings city-settings.json --frames 0-29 --samples 256
 ```
 
 `render` takes the same options as `npm run render`: `--frame N` or `--frames A-B`, `--samples N`, `--hdr sky.hdr` and `--set key=value`. Build it on each platform you want to run it on (or cross-compile); the shaders are embedded, so the binary needs nothing else.
@@ -132,7 +133,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 ## Roadmap
 
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
-- **Render farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.
+- **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.
 - **Big scenes:** sparse bricks instead of the dense grid; streaming.
 
 

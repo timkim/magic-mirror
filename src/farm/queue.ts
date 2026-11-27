@@ -1,4 +1,4 @@
-// Render farm job queue: which frames are waiting, who is rendering what, and when to give a
+// Magic Prism job queue: which frames are waiting, who is rendering what, and when to give a
 // frame to someone else. No networking here, so it is easy to test.
 
 import type { SettingValue } from '../core/settings';

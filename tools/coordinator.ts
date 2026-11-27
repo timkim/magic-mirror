@@ -1,4 +1,4 @@
-// Magic Mirror render farm coordinator. Run it on one PC; it hands out animation frames to
+// Magic Prism render farm coordinator (the render side of Magic Mirror). Run it on one PC; it hands out animation frames to
 // workers (browser tabs or `npm run worker` processes) on your network, saves the finished
 // PNGs, and stitches a video with ffmpeg when a job completes (if ffmpeg is installed).
 // It also serves the built app, so other PCs can just open http://<this-pc>:8080.
@@ -65,7 +65,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
   const stitch = async (jobId: string) => {
     const job = queue.jobs.get(jobId)!;
     const dir = store.get(jobId)!.dir;
-    if (!(await hasFfmpeg())) { console.log(`[farm] ${job.name}: done (install ffmpeg to get an .mp4 automatically)`); return; }
+    if (!(await hasFfmpeg())) { console.log(`[prism] ${job.name}: done (install ffmpeg to get an .mp4 automatically)`); return; }
     const fps = Number(job.settings['anim.fps'] ?? 12) || 12;
     const name = safeName(job.name);
     const args = ['-y', '-loglevel', 'error', '-framerate', String(fps), '-start_number', String(job.firstFrame), '-i', join(dir, `${name}_%04d.png`),
@@ -73,8 +73,8 @@ export function startCoordinator(opts: Partial<Options> = {}) {
     await new Promise<void>((ok) => {
       const p = spawn('ffmpeg', args, { stdio: 'inherit' });
       p.on('exit', (code) => {
-        if (code === 0) { job.video = `${name}.mp4`; console.log(`[farm] ${job.name}: video saved to ${join(dir, `${name}.mp4`)}`); }
-        else console.log(`[farm] ${job.name}: ffmpeg failed (code ${code})`);
+        if (code === 0) { job.video = `${name}.mp4`; console.log(`[prism] ${job.name}: video saved to ${join(dir, `${name}.mp4`)}`); }
+        else console.log(`[prism] ${job.name}: ffmpeg failed (code ${code})`);
         ok();
       });
       p.on('error', () => ok());
@@ -85,7 +85,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
     const root = resolve(o.dist);
     const file = resolve(root, normalize('.' + (path === '/' ? '/index.html' : decodeURIComponent(path))));
     if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
-      if (!existsSync(join(root, 'index.html'))) return send(res, 200, 'Magic Mirror farm is running. Run "npm run build" to also serve the app here.', 'text/plain');
+      if (!existsSync(join(root, 'index.html'))) return send(res, 200, 'Magic Prism coordinator is running. Run "npm run build" to also serve the app here.', 'text/plain');
       return send(res, 404, { error: 'Not found' });
     }
     res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' });
@@ -113,7 +113,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, 'job.json'), JSON.stringify({ ...spec, id: job.id }, null, 2));
         store.set(job.id, { dir });
-        console.log(`[farm] new job ${job.name} (${job.id}): frames ${job.firstFrame}-${job.lastFrame}, ${job.samples} samples`);
+        console.log(`[prism] new job ${job.name} (${job.id}): frames ${job.firstFrame}-${job.lastFrame}, ${job.samples} samples`);
         return send(res, 201, { id: job.id });
       }
 
@@ -154,7 +154,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
             writeFileSync(join(files.dir, `${safeName(job.name)}_${String(frame).padStart(4, '0')}.png`), png);
             const finished = queue.complete(job.id, frame, worker);
             const st = queue.status().jobs.find((j) => j.id === job.id)!;
-            console.log(`[farm] ${job.name} frame ${frame} from ${queue.workers.get(worker)?.name ?? worker} (${st.done}/${st.total})`);
+            console.log(`[prism] ${job.name} frame ${frame} from ${queue.workers.get(worker)?.name ?? worker} (${st.done}/${st.total})`);
             if (finished) void stitch(job.id);
             return send(res, 204);
           }
@@ -184,8 +184,8 @@ export function startCoordinator(opts: Partial<Options> = {}) {
 
   server.listen(o.port, () => {
     const ips = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address);
-    console.log(`[farm] coordinator on port ${o.port}; output in ${resolve(o.out)}`);
-    for (const ip of ips) console.log(`[farm] other PCs: open http://${ip}:${o.port}  or run: npm run worker -- http://${ip}:${o.port}`);
+    console.log(`[prism] coordinator on port ${o.port}; output in ${resolve(o.out)}`);
+    for (const ip of ips) console.log(`[prism] other PCs: open http://${ip}:${o.port}  or run: npm run worker -- http://${ip}:${o.port}`);
   });
   return { server, queue };
 }

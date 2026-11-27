@@ -1,13 +1,13 @@
 [package]
-name = "magic-mirror-worker"
+name = "magic-prism"
 version = "0.1.0"
 edition = "2021"
-description = "Native render farm worker and renderer for Magic Mirror (wgpu)"
+description = "Magic Prism: the native renderer and render farm worker behind Magic Mirror (wgpu)"
 license = "MIT"
 build = "build.rs"
 
 [[bin]]
-name = "mm-worker"
+name = "prism"
 path = "src/main.rs"
 
 [dependencies]
