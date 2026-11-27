@@ -1,0 +1,64 @@
+# Checks every push and pull request: the app (types, tests, build), the Cloudflare connector
+# (types, a dry-run deploy) and the Rust worker (build, tests). GPU rendering isn't tested here:
+# GitHub's runners have no GPU.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: App (Svelte, tests, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx vite build
+      - name: Bundle the coordinator, worker and headless renderer
+        run: |
+          for t in coordinator worker render-headless inspect-vox; do
+            npx esbuild --bundle --platform=node --format=esm --packages=external --log-level=warning tools/$t.ts --outfile=.build/$t.mjs
+          done
+
+  cloud:
+    name: Cloudflare connector
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx wrangler deploy --dry-run --outdir /tmp/worker
+
+  rust:
+    name: Rust worker (prism)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
