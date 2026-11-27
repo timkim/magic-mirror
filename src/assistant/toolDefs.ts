@@ -16,7 +16,7 @@ export const ASSISTANT_GUIDE = `You are working inside Magic Mirror, a MagicaVox
 
 - Coordinates are integers and Z is up. A scene has models (voxel volumes, each up to 256 per axis) placed by objects (transforms). Several objects can share one model.
 - Voxel edits use the model's own coordinates: 0..size-1 on each axis. Colours are palette indices 1-255; colour 0 erases.
-- Start with get_scene. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
+- Start with get_scene. Use set_object to move, turn, hide or re-layer objects and resize_model to give a model more room. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
 - To build something new, add_model with a size that fits it, then draw into it. Put its bottom on the ground: position z = size z / 2 plus the ground height that get_scene reports.
 - Pick colours from the palette that get_scene describes, or set new ones in unused slots with set_palette (never recolour a slot the scene already uses unless asked).
 - Animation: objects move between keyframes with set_object_animation (MagicaVoxel interpolates position linearly). The camera animates with set_camera_keyframes (orbits, push-ins, crane moves); get_scene shows the keys and the timeline end. The sun, sky and render settings are settings (list_settings, set_settings); set_frame shows a frame. To check a camera move, preview a few frames (set_frame, then render_preview).
@@ -92,6 +92,25 @@ export const TOOL_DEFS: ToolDef[] = [
     name: 'move_object',
     description: 'Place an object at a position (relative to its parent; usually world). Removes its animation keyframes. rotation_z: 0, 90, 180 or 270 degrees.',
     inputSchema: { type: 'object', properties: { object_id: int('Object id from get_scene'), position: vec3('Position'), rotation_z: { type: 'number' } }, required: ['object_id', 'position'] },
+  },
+  {
+    name: 'set_object',
+    description: 'Change an object: move_by [dx,dy,dz] (keeps its keyframes, shifting them all), rotate (quarter turns about Z, positive = counter-clockwise from above, in place), name, hidden, layer (0-15).',
+    inputSchema: {
+      type: 'object',
+      properties: { object_id: int('Object id'), move_by: vec3('Voxels to move by'), rotate: { type: 'integer' }, name: { type: 'string' }, hidden: { type: 'boolean' }, layer: { type: 'integer' } },
+      required: ['object_id'],
+    },
+  },
+  {
+    name: 'resize_model',
+    description: "Change a model's box size (1-256 per axis). offset shifts the existing voxels inside the new box, e.g. size +4 in Z with offset [0,0,4] adds room underneath. Voxels outside the new box are cut. Objects using the model stay where they are.",
+    inputSchema: { type: 'object', properties: { model_id: int('Model id'), size: vec3('New size'), offset: vec3('Shift of existing voxels (default 0,0,0)') }, required: ['model_id', 'size'] },
+  },
+  {
+    name: 'set_layer',
+    description: 'Rename a layer (0-15) or show/hide it with everything on it.',
+    inputSchema: { type: 'object', properties: { layer_id: { type: 'integer' }, name: { type: 'string' }, hidden: { type: 'boolean' } }, required: ['layer_id'] },
   },
   {
     name: 'set_object_animation',

@@ -187,7 +187,7 @@ export class App {
     (file.nodes.get(1) as { childIds: number[] }).childIds.push(2);
     this.loadScene(file, 'untitled.vox', null);
     this.editor.enabled.set(true);
-    this.editor.selected.set(0);
+    this.editor.selected.set(2); // the model's transform node
   }
 
   private loadScene(file: VoxFile, name: string, bytes: Uint8Array | null) {

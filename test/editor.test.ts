@@ -45,7 +45,7 @@ describe('VoxelEditor', () => {
     const cx = (i % g.dims[0]) + g.origin[0], cy = Math.floor(i / g.dims[0]) % g.dims[1] + g.origin[1];
     const hit = castRay(g, [cx + 0.5, cy + 0.5, 100], [0, 0, -1]);
     expect(hit && !hit.ground).toBe(true);
-    expect(editor.ownerOf(hit!.cell)).toBe(0);
+    expect(editor.ownerOf(hit!.cell)?.modelId).toBe(0);
   });
 
   it('adds a model to an empty scene and undoes it', () => {
@@ -61,5 +61,44 @@ describe('VoxelEditor', () => {
     history.undo();
     history.undo();
     expect(baker.placements.length).toBe(0);
+  });
+
+  it('moves, rotates and resizes objects in place, and edits layers', () => {
+    const { file, history, editor, baker } = setup();
+    const node = baker().placements[0].nodeId!;
+    const world = () => { const g = baker().grid, out: string[] = []; g.cells.forEach((c, i) => { if (c) out.push([i % g.dims[0] + g.origin[0], Math.floor(i / g.dims[0]) % g.dims[1] + g.origin[1], Math.floor(i / (g.dims[0] * g.dims[1])) + g.origin[2]].join(',')); }); return out.sort(); };
+    const before = world();
+
+    editor.moveObject(node, [3, -2, 1]);
+    expect(world()).toEqual(before.map((p) => { const [x, y, z] = p.split(',').map(Number); return [x + 3, y - 2, z + 1].join(','); }).sort());
+    history.undo();
+    expect(world()).toEqual(before);
+
+    // Growing the box (and shifting voxels inside it) must not move anything in the world.
+    const r = editor.resizeModel(0, [7, 6, 9], [2, 1, 3]);
+    expect(r.cut).toBe(0);
+    expect(world()).toEqual(before);
+    // Shrinking cuts voxels outside the box, but keeps the rest in place.
+    history.undo();
+    const cut = editor.resizeModel(0, [2, 2, 2]);
+    expect(cut.cut).toBe(1);
+    expect(before).toEqual(expect.arrayContaining(world()));
+    history.undo();
+
+    editor.rotateObject(node, 2);
+    expect(world()).not.toEqual(before);
+    editor.rotateObject(node, 2);
+    expect(world()).toEqual(before);
+
+    editor.setObject(node, { hidden: true });
+    expect(baker().placements.length).toBe(0);
+    history.undo();
+    editor.setLayer(0, { name: 'Buildings', hidden: true });
+    expect(baker().placements.length).toBe(0);
+    const again = parseVox(serializeVox(file));
+    expect(again.layers.get(0)?.attrs._name).toBe('Buildings');
+    expect(again.layers.get(0)?.hidden).toBe(true);
+    history.undo();
+    expect(baker().placements.length).toBe(1);
   });
 });

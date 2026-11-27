@@ -8,12 +8,14 @@ import EditToolbar from './ui/EditToolbar.svelte';
 import EditPanel from './ui/EditPanel.svelte';
 import PalettePanel from './ui/PalettePanel.svelte';
 import EditOverlay from './ui/EditOverlay.svelte';
+import LayersPanel from './ui/LayersPanel.svelte';
 
 export const editorFeature: Feature = {
   id: 'editor',
   ui: [
     { slot: 'toolbar', component: EditToolbar, order: 5 },
     { slot: 'left', component: EditPanel, title: 'Edit', order: -10 },
+    { slot: 'left', component: LayersPanel, title: 'Layers', order: -9, collapsed: true },
     { slot: 'right', component: PalettePanel, title: 'Palette', order: -10 },
     { slot: 'stage', component: EditOverlay },
   ],
@@ -26,9 +28,11 @@ export const editorFeature: Feature = {
       pointerUp: () => ed.pointerUp(),
       leave: () => ed.leave(),
     });
+    const cursor = () => app.viewportCursor.set(get(ed.enabled) ? (get(ed.mode) === 'move' ? 'move' : 'crosshair') : null);
     ed.enabled.subscribe((on) => {
-      app.viewportCursor.set(on ? 'crosshair' : null);
+      cursor();
       if (!on) ed.preview.set({ boxes: [] });
     });
+    ed.mode.subscribe(cursor);
   },
 };

@@ -9,8 +9,8 @@ import type { Rot3, TransformFrame } from '../vox/types';
 import type { SettingValue } from '../core/settings';
 import { captureKey, getKeys, withKey, type CameraKey } from '../anim/camera';
 import { setCameraKeys, setTimelineEnd } from '../edit/cameraKeys';
+import { shapeCells, type Shape } from '../edit/shapes';
 
-type V3 = [number, number, number];
 export type McpContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 export interface ToolOutput {
   content: McpContent[];
@@ -47,6 +47,7 @@ function sceneSummary(app: App) {
     return {
       object_id: p.nodeId,
       name: p.name,
+      layer: node?.kind === 'transform' ? node.layerId : undefined,
       model_id: p.modelId,
       size: file.models[p.modelId].size,
       voxels: file.models[p.modelId].voxels.length / 4,
@@ -68,6 +69,8 @@ function sceneSummary(app: App) {
     ground_height: grid.origin[2],
     animation: { last_frame: app.animationEnd(), scene_keyframes_end: animationLength(file), current_frame: s.num('anim.frame'), fps: s.num('anim.fps') },
     camera_keyframes: getKeys(s),
+    layers: [...file.layers.values()].map((l) => ({ id: l.id, name: l.attrs._name ?? null, hidden: l.hidden })),
+    hidden_objects: [...file.nodes.values()].filter((n) => n.kind === 'transform' && n.attrs._hidden === '1').map((n) => ({ object_id: n.id, name: n.attrs._name ?? null })),
     objects,
     objects_listed: `${objects.length} of ${placed.length}`,
     palette_in_use: [...used.entries()].sort((a, b) => b[1] - a[1]).map(([i, n]) => ({ index: i, hex: hex(file.palette, i), voxels: n, material: file.materials.get(i)?._type?.slice(1) ?? 'diffuse' })),
@@ -78,54 +81,6 @@ function sceneSummary(app: App) {
     },
     editor: { editing_model: app.editor.selectedPlacement()?.modelId ?? null, colour: get(app.editor.color) },
   };
-}
-
-interface Shape {
-  shape: 'box' | 'sphere' | 'cylinder' | 'line';
-  from?: V3; to?: V3; center?: V3; radius?: number; height?: number;
-  color?: number; mode?: 'set' | 'add' | 'paint' | 'erase'; hollow?: boolean;
-}
-
-/** Cells (model coordinates, unclipped) covered by a shape. */
-function shapeCells(sh: Shape): V3[] {
-  let lo: V3, hi: V3, inside: (x: number, y: number, z: number) => boolean;
-  const r = Math.max(0, sh.radius ?? 0);
-  if (sh.shape === 'box') {
-    const a = sh.from ?? [0, 0, 0], b = sh.to ?? a;
-    lo = a.map((v, i) => Math.round(Math.min(v, b[i]))) as V3;
-    hi = a.map((v, i) => Math.round(Math.max(v, b[i]))) as V3;
-    inside = (x, y, z) => x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1] && z >= lo[2] && z <= hi[2];
-  } else if (sh.shape === 'sphere') {
-    const c = sh.center ?? [0, 0, 0], rr = (r + 0.5) ** 2;
-    lo = c.map((v) => Math.floor(v - r - 1)) as V3;
-    hi = c.map((v) => Math.ceil(v + r + 1)) as V3;
-    inside = (x, y, z) => (x - c[0]) ** 2 + (y - c[1]) ** 2 + (z - c[2]) ** 2 <= rr;
-  } else if (sh.shape === 'cylinder') {
-    const c = sh.center ?? [0, 0, 0], h = Math.max(1, Math.round(sh.height ?? 1)), rr = (r + 0.5) ** 2;
-    lo = [Math.floor(c[0] - r - 1), Math.floor(c[1] - r - 1), Math.round(c[2])];
-    hi = [Math.ceil(c[0] + r + 1), Math.ceil(c[1] + r + 1), Math.round(c[2]) + h - 1];
-    inside = (x, y, z) => z >= lo[2] && z <= hi[2] && (x - c[0]) ** 2 + (y - c[1]) ** 2 <= rr;
-  } else {
-    const a = sh.from ?? [0, 0, 0], b = sh.to ?? a, rr = (r + 0.5) ** 2;
-    const d = b.map((v, i) => v - a[i]), len2 = d[0] ** 2 + d[1] ** 2 + d[2] ** 2 || 1;
-    lo = a.map((v, i) => Math.floor(Math.min(v, b[i]) - r - 1)) as V3;
-    hi = a.map((v, i) => Math.ceil(Math.max(v, b[i]) + r + 1)) as V3;
-    inside = (x, y, z) => {
-      const t = Math.max(0, Math.min(1, ((x - a[0]) * d[0] + (y - a[1]) * d[1] + (z - a[2]) * d[2]) / len2));
-      return (x - a[0] - d[0] * t) ** 2 + (y - a[1] - d[1] * t) ** 2 + (z - a[2] - d[2] * t) ** 2 <= Math.max(rr, 0.75);
-    };
-  }
-  const vol = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1);
-  if (vol > 20_000_000) throw new Error(`A ${sh.shape} that big (${vol.toLocaleString()} cells) is too large.`);
-  const out: V3[] = [];
-  for (let z = lo[2]; z <= hi[2]; z++)
-    for (let y = lo[1]; y <= hi[1]; y++)
-      for (let x = lo[0]; x <= hi[0]; x++) {
-        if (!inside(x, y, z)) continue;
-        if (sh.hollow && inside(x + 1, y, z) && inside(x - 1, y, z) && inside(x, y + 1, z) && inside(x, y - 1, z) && inside(x, y, z + 1) && inside(x, y, z - 1)) continue;
-        out.push([x, y, z]);
-      }
-  return out;
 }
 
 async function renderPreview(app: App, samples: number, maxSize: number): Promise<ToolOutput> {
@@ -218,6 +173,28 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
       need(app);
       ed.setTransform(a.object_id, [{ rotation: rotZ(a.rotation_z), translation: a.position.map(Math.round) }], label('move object'));
       return text('Moved.');
+    }
+
+    case 'set_object': {
+      need(app);
+      const id = a.object_id;
+      ed.group(label(`object ${id}`), () => {
+        if (a.move_by) ed.moveObject(id, a.move_by);
+        if (a.rotate) ed.rotateObject(id, a.rotate);
+        if (a.name !== undefined || a.hidden !== undefined || a.layer !== undefined) ed.setObject(id, { name: a.name, hidden: a.hidden, layer: a.layer });
+      });
+      return text('Done.');
+    }
+
+    case 'resize_model': {
+      need(app);
+      return text(ed.resizeModel(a.model_id, a.size, a.offset ?? [0, 0, 0], label(`resize model ${a.model_id}`)));
+    }
+
+    case 'set_layer': {
+      need(app);
+      ed.setLayer(a.layer_id, { name: a.name, hidden: a.hidden }, label(`layer ${a.layer_id}`));
+      return text('Done.');
     }
 
     case 'set_object_animation': {

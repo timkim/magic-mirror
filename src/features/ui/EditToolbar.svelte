@@ -40,12 +40,19 @@
     if (k === 'tab') { e.preventDefault(); enabled.update((v) => !v); return; }
     if (!$enabled) return;
     const keys: Record<string, () => void> = {
-      a: () => mode.set('attach'), e: () => mode.set('erase'), p: () => mode.set('paint'),
-      v: () => brush.set('voxel'), b: () => brush.set('box'), f: () => brush.set('face'),
+      a: () => mode.set('attach'), e: () => mode.set('erase'), p: () => mode.set('paint'), m: () => mode.set('move'),
+      v: () => brush.set('voxel'), b: () => brush.set('box'), f: () => brush.set('face'), l: () => brush.set('line'), s: () => brush.set('sphere'),
+      r: () => { const id = $selected; if (id !== null) ed.rotateObject(id, e.shiftKey ? 1 : -1); },
       x: () => mirror.update((m) => ({ ...m, x: !m.x })), y: () => mirror.update((m) => ({ ...m, y: !m.y })), z: () => mirror.update((m) => ({ ...m, z: !m.z })),
       escape: () => { selected.set(null); ed.preview.set({ boxes: [] }); },
     };
-    if (keys[k]) { e.preventDefault(); keys[k](); }
+    if (keys[k]) { e.preventDefault(); keys[k](); return; }
+    // Arrow keys nudge the selected object in Move mode (PageUp/PageDown: up and down).
+    const nudge: Record<string, [number, number, number]> = { arrowleft: [-1, 0, 0], arrowright: [1, 0, 0], arrowup: [0, 1, 0], arrowdown: [0, -1, 0], pageup: [0, 0, 1], pagedown: [0, 0, -1] };
+    if ($mode === 'move' && $selected !== null && nudge[k]) {
+      e.preventDefault();
+      ed.moveObject($selected, nudge[k].map((v) => v * (e.shiftKey ? 10 : 1)) as [number, number, number], 'Nudge object');
+    }
   }
 </script>
 

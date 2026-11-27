@@ -1,20 +1,33 @@
 // The voxel editor, modelled on MagicaVoxel's model mode: pick a model, then Attach, Erase or
-// Paint with a Voxel, Box or Face brush, optionally mirrored. Every change is an undoable
-// command, and the same methods (setVoxels, setColor, setMaterial, addModel) are what scripts
-// and the AI assistant call.
+// Paint with a Voxel, Box, Face, Line or Sphere brush, optionally mirrored, or Move it. Every
+// change is an undoable command, and the same methods (setVoxels, setColor, setMaterial,
+// addModel, moveObject, rotateObject, resizeModel, setObject, setLayer) are what scripts and
+// the AI assistant call.
 
 import { get, writable } from 'svelte/store';
 import { IDENTITY_ROT } from '../vox/parser';
 import { placementBounds, worldToModel, type PlacedModel } from '../vox/scene';
-import type { GroupNode, TransformFrame, VoxDict, VoxFile } from '../vox/types';
+import type { GroupNode, Rot3, TransformFrame, TransformNode, VoxDict, VoxFile } from '../vox/types';
+import { shapeCells } from './shapes';
 import type { Command, History } from './history';
 import { cameraRay, castRay, planeCell, type GridHit } from './pick';
 import { ModelVolume } from './volume';
 import type { FrameParams } from '../render/renderer';
 import type { VoxelGrid } from '../vox/scene';
 
-export type EditMode = 'attach' | 'erase' | 'paint';
-export type Brush = 'voxel' | 'box' | 'face';
+export type EditMode = 'attach' | 'erase' | 'paint' | 'move';
+export type Brush = 'voxel' | 'box' | 'face' | 'line' | 'sphere';
+/** Brushes that drag from a start cell to an end cell on the plane where the drag began. */
+const DRAG_BRUSHES: Brush[] = ['box', 'line', 'sphere'];
+
+function mulRot(a: Rot3, b: Rot3): Rot3 {
+  const o = [0, 0, 0, 0, 0, 0, 0, 0, 0] as Rot3;
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) o[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+  return o;
+}
+const applyRot = (r: Rot3, v: number[]): V3 => [0, 1, 2].map((i) => r[i * 3] * v[0] + r[i * 3 + 1] * v[1] + r[i * 3 + 2] * v[2]) as V3;
+/** A quarter turn about Z (counter-clockwise seen from above). */
+const ROT_Z90: Rot3 = [0, -1, 0, 1, 0, 0, 0, 0, 1];
 type V3 = [number, number, number];
 
 /** What the editor needs from the app (kept small so it also works headless). */
@@ -45,12 +58,13 @@ export class VoxelEditor {
   /** Palette index used to attach and paint. */
   readonly color = writable(1);
   readonly mirror = writable({ x: false, y: false, z: false });
-  /** Index into the current placements of the model being edited. */
+  /** The object being edited: the id of its transform node. */
   readonly selected = writable<number | null>(null);
   readonly preview = writable<Preview>({ boxes: [] });
 
   private volumes = new Map<number, ModelVolume>();
-  private stroke: { modelId: number; diff: Diff; label: string; start?: { cell: V3; axis: number; plane: number; hit: GridHit } } | null = null;
+  private stroke: { modelId: number; diff: Diff; label: string; start?: { cell: V3; axis: number; plane: number; hit: GridHit }; end?: V3 } | null = null;
+  private moving: { nodeId: number; axis: number; plane: number; from: V3; delta: V3 } | null = null;
 
   constructor(readonly host: EditorHost, readonly history: History) {}
 
@@ -73,8 +87,15 @@ export class VoxelEditor {
   }
 
   selectedPlacement(): PlacedModel | null {
-    const i = get(this.selected);
-    return i === null ? null : (this.host.placements()[i] ?? null);
+    const id = get(this.selected);
+    return id === null ? null : (this.host.placements().find((p) => p.nodeId === id) ?? null);
+  }
+
+  /** Select an object (by transform node id) and say so in the status bar. */
+  select(nodeId: number | null) {
+    this.selected.set(nodeId);
+    const p = this.selectedPlacement();
+    if (p) this.host.setStatus('msg', `Editing ${p.name ?? `model ${p.modelId}`}`);
   }
 
   // ---- Scripting / assistant API -------------------------------------------------------
@@ -138,8 +159,7 @@ export class VoxelEditor {
       file.nodes.set(shp.id, shp);
       group().childIds.push(next);
       this.host.structureChanged();
-      const idx = this.host.placements().findIndex((p) => p.modelId === modelId);
-      this.selected.set(idx >= 0 ? idx : null);
+      this.selected.set(trn.id);
     };
     const revert = () => {
       group().childIds = group().childIds.filter((c) => c !== next);
@@ -170,6 +190,98 @@ export class VoxelEditor {
     this.history.run({ label, apply: () => set(after), revert: () => set(before) });
   }
 
+  private transform(nodeId: number) {
+    const node = this.host.file!.nodes.get(nodeId);
+    if (node?.kind !== 'transform') throw new Error(`No object with id ${nodeId}`);
+    return node;
+  }
+
+  /** Move an object by whole voxels. Keyframed objects move every key, keeping the animation. */
+  moveObject(nodeId: number, delta: V3, label = 'Move object') {
+    if (delta.every((d) => d === 0)) return;
+    const node = this.transform(nodeId);
+    this.setTransform(nodeId, node.frames.map((f) => ({ ...f, translation: f.translation.map((v, i) => v + Math.round(delta[i])) as V3 })), label);
+  }
+
+  /** Turn an object about Z by quarter turns (1 = 90° counter-clockwise from above), in place. */
+  rotateObject(nodeId: number, quarterTurns: number, label = 'Rotate object') {
+    const turns = ((Math.round(quarterTurns) % 4) + 4) % 4;
+    if (!turns) return;
+    const node = this.transform(nodeId);
+    let r: Rot3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    for (let i = 0; i < turns; i++) r = mulRot(ROT_Z90, r);
+    this.setTransform(nodeId, node.frames.map((f) => ({ ...f, rotation: mulRot(r, f.rotation) })), label);
+  }
+
+  /**
+   * Change a model's box size. `offset` shifts its voxels inside the new box (e.g. grow it
+   * downwards by [0, 0, 4] with a size 4 taller); voxels that fall outside are cut. Every object
+   * showing this model is moved so its voxels stay where they were in the world.
+   */
+  resizeModel(modelId: number, size: V3, offset: V3 = [0, 0, 0], label = 'Resize model') {
+    const file = this.host.file!;
+    const old = file.models[modelId];
+    if (!old) throw new Error(`No model ${modelId}`);
+    const ns = size.map((v) => Math.max(1, Math.min(256, Math.round(v)))) as V3;
+    const off = offset.map(Math.round) as V3;
+    const kept: number[] = [];
+    for (let i = 0; i < old.voxels.length; i += 4) {
+      const x = old.voxels[i] + off[0], y = old.voxels[i + 1] + off[1], z = old.voxels[i + 2] + off[2];
+      if (x >= 0 && y >= 0 && z >= 0 && x < ns[0] && y < ns[1] && z < ns[2]) kept.push(x, y, z, old.voxels[i + 3]);
+    }
+    const next = { size: ns, voxels: new Uint8Array(kept) };
+    // Pivots sit at floor(size / 2), so compensate each object that shows only this model.
+    const shift = [0, 1, 2].map((i) => Math.floor(ns[i] / 2) - Math.floor(old.size[i] / 2) - off[i]);
+    const moves: { node: TransformNode; before: TransformFrame[]; after: TransformFrame[] }[] = [];
+    for (const n of file.nodes.values()) {
+      if (n.kind !== 'transform') continue;
+      const child = file.nodes.get(n.childId);
+      if (child?.kind !== 'shape' || !child.models.every((m) => m.modelId === modelId)) continue;
+      moves.push({ node: n, before: n.frames, after: n.frames.map((f) => ({ ...f, attrs: undefined, translation: f.translation.map((v, i) => v + applyRot(f.rotation, shift)[i]) as V3 })) });
+    }
+    const set = (model: typeof old, which: 'before' | 'after') => {
+      file.models[modelId] = model;
+      for (const m of moves) m.node.frames = m[which];
+      this.host.structureChanged();
+    };
+    this.history.run({ label, apply: () => set(next, 'after'), revert: () => set(old, 'before') });
+    return { size: ns, voxels: kept.length / 4, cut: old.voxels.length / 4 - kept.length / 4 };
+  }
+
+  /** Rename, hide or show an object, or put it on another layer. */
+  setObject(nodeId: number, change: { name?: string; hidden?: boolean; layer?: number }, label = 'Object') {
+    const node = this.transform(nodeId);
+    const before = { attrs: { ...node.attrs }, layerId: node.layerId };
+    const attrs = { ...node.attrs };
+    if (change.name !== undefined) { if (change.name) attrs._name = change.name; else delete attrs._name; }
+    if (change.hidden !== undefined) { if (change.hidden) attrs._hidden = '1'; else delete attrs._hidden; }
+    const layerId = change.layer ?? node.layerId;
+    if (change.layer !== undefined && !this.host.file!.layers.has(change.layer)) throw new Error(`No layer ${change.layer}`);
+    const set = (a: VoxDict, l: number) => {
+      node.attrs = a;
+      node.layerId = l;
+      this.host.structureChanged();
+    };
+    this.history.run({ label, apply: () => set(attrs, layerId), revert: () => set(before.attrs, before.layerId) });
+  }
+
+  /** Rename, hide or show a layer (MagicaVoxel's 16 layers). */
+  setLayer(layerId: number, change: { name?: string; hidden?: boolean }, label = `Layer ${layerId}`) {
+    const file = this.host.file!;
+    const before = file.layers.get(layerId) ?? { id: layerId, attrs: {}, hidden: false };
+    const attrs = { ...before.attrs };
+    if (change.name !== undefined) { if (change.name) attrs._name = change.name; else delete attrs._name; }
+    if (change.hidden !== undefined) attrs._hidden = change.hidden ? '1' : '0';
+    const after = { id: layerId, attrs, hidden: attrs._hidden === '1' };
+    const existed = file.layers.has(layerId);
+    const set = (l: typeof before | null) => {
+      if (l) file.layers.set(layerId, l);
+      else file.layers.delete(layerId);
+      this.host.structureChanged();
+    };
+    this.history.run({ label, apply: () => set(after), revert: () => set(existed ? before : null) });
+  }
+
   /** Run several edits as one undo step. */
   group(label: string, fn: () => void) {
     const start = this.history.size;
@@ -195,12 +307,12 @@ export class VoxelEditor {
   }
 
   /** Which placed model owns a world voxel (the last one drawn there, like the baker). */
-  ownerOf(cell: V3): number | null {
+  ownerOf(cell: V3): PlacedModel | null {
     const file = this.host.file!;
     const ps = this.host.placements();
     for (let i = ps.length - 1; i >= 0; i--) {
       const l = worldToModel(file, ps[i], cell);
-      if (this.volume(ps[i].modelId).get(...l)) return i;
+      if (this.volume(ps[i].modelId).get(...l)) return ps[i];
     }
     return null;
   }
@@ -216,7 +328,7 @@ export class VoxelEditor {
     const file = this.host.file!;
     const vol = this.volume(p.modelId);
     const base: V3 = mode === 'attach' ? [hit.cell[0] + hit.normal[0], hit.cell[1] + hit.normal[1], hit.cell[2] + hit.normal[2]] : hit.cell;
-    if (mode !== 'attach' && (hit.ground || this.ownerOf(hit.cell) !== get(this.selected))) return [];
+    if (mode !== 'attach' && (hit.ground || this.ownerOf(hit.cell)?.nodeId !== p.nodeId)) return [];
     const start = worldToModel(file, p, base);
     if (brush === 'box' && boxEnd) {
       const end = worldToModel(file, p, boxEnd);
@@ -224,6 +336,13 @@ export class VoxelEditor {
       const out: V3[] = [];
       for (let z = lo[2]; z <= hi[2]; z++) for (let y = lo[1]; y <= hi[1]; y++) for (let x = lo[0]; x <= hi[0]; x++) out.push([x, y, z]);
       return out;
+    }
+    if ((brush === 'line' || brush === 'sphere') && boxEnd) {
+      const end = worldToModel(file, p, boxEnd);
+      const cells = brush === 'line'
+        ? shapeCells({ shape: 'line', from: start, to: end })
+        : shapeCells({ shape: 'sphere', center: start, radius: Math.hypot(end[0] - start[0], end[1] - start[1], end[2] - start[2]) });
+      return cells.filter((c) => vol.inside(...c));
     }
     if (brush === 'face' && !hit.ground) {
       // Flood the visible, same-coloured face around the hit voxel, within its plane.
@@ -286,7 +405,7 @@ export class VoxelEditor {
   }
 
   /** Pointer pressed on the render (u, v in 0..1). Returns true if the editor used it. */
-  pointerDown(u: number, v: number, aspect: number, e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
+  pointerDown(u: number, v: number, aspect: number, e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey?: boolean }): boolean {
     if (!get(this.enabled) || !this.host.grid) return false;
     const r = this.ray(u, v, aspect);
     if (!r) return true;
@@ -301,42 +420,69 @@ export class VoxelEditor {
       return true;
     }
     const owner = hit && !hit.ground ? this.ownerOf(hit.cell) : null;
-    if (e.ctrlKey || e.metaKey || get(this.selected) === null) {
-      if (owner !== null) {
-        this.selected.set(owner);
-        const p = this.host.placements()[owner];
-        this.host.setStatus('msg', `Editing ${p.name ?? `model ${p.modelId}`}`);
-      }
+    const mode = get(this.mode), brush = get(this.brush);
+    // Ctrl+click picks another model; with nothing picked, a click picks (Move picks and drags).
+    if (e.ctrlKey || e.metaKey || (get(this.selected) === null && mode !== 'move')) {
+      if (owner?.nodeId !== undefined) this.select(owner.nodeId);
       this.hover(u, v, aspect);
+      return true;
+    }
+    if (mode === 'move') {
+      if (owner?.nodeId !== undefined && owner.nodeId !== get(this.selected)) this.select(owner.nodeId);
+      const p = this.selectedPlacement();
+      if (!p || p.nodeId === undefined) return true;
+      // Drag on the horizontal plane through the clicked point; with Shift, up and down.
+      const t = hit ? hit.t : 0;
+      const at = [0, 1, 2].map((i) => r.origin[i] + r.dir[i] * t) as V3;
+      let axis = 2, plane = hit ? at[2] : this.host.grid.origin[2];
+      if (e.shiftKey) {
+        const cam = this.host.cameraFrame()!;
+        axis = Math.abs(cam.forward[0]) > Math.abs(cam.forward[1]) ? 0 : 1;
+        plane = at[axis];
+      }
+      const from = planeCell(r.origin, r.dir, axis, plane);
+      if (from) this.moving = { nodeId: p.nodeId, axis, plane, from, delta: [0, 0, 0] };
       return true;
     }
     const p = this.selectedPlacement();
     if (!p || !hit) return true;
-    const mode = get(this.mode), brush = get(this.brush);
-    const names = { attach: 'Attach', erase: 'Erase', paint: 'Paint' };
+    const names = { attach: 'Attach', erase: 'Erase', paint: 'Paint', move: 'Move' };
     this.stroke = { modelId: p.modelId, diff: new Map(), label: `${names[mode]} (${brush})` };
     const base: V3 = mode === 'attach' ? [hit.cell[0] + hit.normal[0], hit.cell[1] + hit.normal[1], hit.cell[2] + hit.normal[2]] : hit.cell;
     const axis = hit.normal.findIndex((x) => x !== 0);
     this.stroke.start = { cell: base, axis, plane: base[axis] + 0.5, hit };
-    if (brush !== 'box') this.addToStroke(this.targets(p, hit, mode, brush));
+    if (!DRAG_BRUSHES.includes(brush)) this.addToStroke(this.targets(p, hit, mode, brush));
     else this.preview.set({ boxes: [...this.modelBox(), { min: base, max: base, kind: 'target' }] });
     return true;
   }
 
   pointerMove(u: number, v: number, aspect: number) {
+    const r = this.ray(u, v, aspect);
+    if (this.moving && r) {
+      const m = this.moving;
+      const now = planeCell(r.origin, r.dir, m.axis, m.plane);
+      if (!now) return;
+      m.delta = m.axis === 2 ? [now[0] - m.from[0], now[1] - m.from[1], 0] : [0, 0, now[2] - m.from[2]];
+      const box = this.modelBox()[0];
+      if (box) this.preview.set({ boxes: [box, { min: box.min.map((x, i) => x + m.delta[i]) as V3, max: box.max.map((x, i) => x + m.delta[i]) as V3, kind: 'target' }] });
+      this.host.setStatus('msg', `Move by ${m.delta.join(', ')}`);
+      return;
+    }
     if (!this.stroke) return this.hover(u, v, aspect);
-    const p = this.selectedPlacement(), r = this.ray(u, v, aspect), st = this.stroke.start;
+    const p = this.selectedPlacement(), st = this.stroke.start;
     if (!p || !r || !st) return;
     const mode = get(this.mode), brush = get(this.brush);
-    if (brush === 'box' || (brush === 'voxel' && mode === 'attach')) {
+    if (DRAG_BRUSHES.includes(brush) || (brush === 'voxel' && mode === 'attach')) {
       // Stay on the plane the stroke started on, so attaching doesn't climb towards the camera.
       const end = planeCell(r.origin, r.dir, st.axis, st.plane);
       if (!end) return;
-      if (brush === 'box') {
-        const lo = st.cell.map((x, i) => Math.min(x, end[i])) as V3, hi = st.cell.map((x, i) => Math.max(x, end[i])) as V3;
-        this.preview.set({ boxes: [...this.modelBox(), { min: lo, max: hi, kind: 'target' }] });
-        this.stroke.start = { ...st };
-        (this.stroke as { end?: V3 }).end = end;
+      if (DRAG_BRUSHES.includes(brush)) {
+        this.stroke.end = end;
+        const cells = this.mirrored(p.modelId, this.targets(p, st.hit, mode, brush, end)).slice(0, 20000).map((c) => this.toWorld(p, c));
+        const boxes: Preview['boxes'] = [...this.modelBox()];
+        if (brush === 'line' && cells.length <= 512) for (const c of cells) boxes.push({ min: c, max: c, kind: 'target' });
+        else if (cells.length) boxes.push({ min: [0, 1, 2].map((i) => Math.min(...cells.map((c) => c[i]))) as V3, max: [0, 1, 2].map((i) => Math.max(...cells.map((c) => c[i]))) as V3, kind: 'target' });
+        this.preview.set({ boxes });
       } else {
         const l = worldToModel(this.host.file!, p, end);
         this.addToStroke([l]);
@@ -350,11 +496,18 @@ export class VoxelEditor {
   }
 
   pointerUp() {
+    if (this.moving) {
+      const m = this.moving;
+      this.moving = null;
+      if (m.delta.some((d) => d !== 0)) this.moveObject(m.nodeId, m.delta, `Move ${this.selectedPlacement()?.name ?? 'object'} by ${m.delta.join(', ')}`);
+      this.preview.set({ boxes: this.modelBox() });
+      return;
+    }
     const st = this.stroke;
     if (!st) return;
     const p = this.selectedPlacement();
-    const end = (st as { end?: V3 }).end;
-    if (get(this.brush) === 'box' && p && st.start) this.addToStroke(this.targets(p, st.start.hit, get(this.mode), 'box', end ?? st.start.cell));
+    const brush = get(this.brush);
+    if (DRAG_BRUSHES.includes(brush) && p && st.start) this.addToStroke(this.targets(p, st.start.hit, get(this.mode), brush, st.end ?? st.start.cell));
     this.stroke = null;
     for (const [i, [a, b]] of st.diff) if (a === b) st.diff.delete(i);
     if (st.diff.size) {
@@ -380,8 +533,14 @@ export class VoxelEditor {
     if (hit) {
       if (!p) {
         const owner = hit.ground ? null : this.ownerOf(hit.cell);
-        if (owner !== null) {
-          const b = placementBounds(this.host.file!, this.host.placements()[owner]);
+        if (owner) {
+          const b = placementBounds(this.host.file!, owner);
+          boxes.push({ min: b.lo as V3, max: b.hi as V3, kind: 'target' });
+        }
+      } else if (get(this.mode) === 'move') {
+        const owner = hit.ground ? null : this.ownerOf(hit.cell);
+        if (owner && owner.nodeId !== p.nodeId) {
+          const b = placementBounds(this.host.file!, owner);
           boxes.push({ min: b.lo as V3, max: b.hi as V3, kind: 'target' });
         }
       } else {

@@ -169,7 +169,27 @@ export function serializeVox(file: VoxFile): Uint8Array {
         o.dict(c.attrs);
       });
   };
-  for (const t of trailing) {
+  const writeLayer = (id: number, reserved: number) => {
+    const l = file.layers.get(id)!;
+    body.chunk('LAYR', (o) => {
+      o.int32(id);
+      o.dict(l.attrs);
+      o.int32(reserved);
+    });
+  };
+  const lastLayr = trailing.map((t) => t.id).lastIndexOf('LAYR');
+  const wroteLayers = new Set<number>();
+  for (const [i, t] of trailing.entries()) {
+    if (t.id === 'LAYR') {
+      // Regenerated from file.layers (names and visibility can be edited), dropped if deleted.
+      const dv = new DataView(t.content.buffer, t.content.byteOffset, t.content.byteLength);
+      const id = dv.getInt32(0, true);
+      if (file.layers.has(id)) writeLayer(id, dv.getInt32(t.content.byteLength - 4, true));
+      wroteLayers.add(id);
+      if (i === lastLayr) for (const lid of file.layers.keys()) if (!wroteLayers.has(lid)) { writeLayer(lid, -1); wroteLayers.add(lid); }
+      wrote.add(t.id);
+      continue;
+    }
     if (t.id === 'RGBA') {
       body.chunk('RGBA', (o) => o.bytes(rgba()));
     } else if (t.id === 'MATL') {
