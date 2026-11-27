@@ -77,6 +77,14 @@ The timeline animates the camera. Pick a frame, frame the shot (drag, pan, zoom,
 
 Keys travel with farm jobs, so the Node and Rust workers render the same moves, and **Save .vox** stores them in the file (as an extra render-settings entry MagicaVoxel ignores) so they come back when you reopen it. The assistant can set them too ("slow orbit over 120 frames, then push in").
 
+## Asset library
+
+The **Library** panel holds reusable pieces. Click one to place it at the camera target, or drag it onto the scene to drop it where you point (on the ground, or on top of what's there). **Add selection to library** saves the selected object or group under My assets (kept in this browser), and any piece downloads as a .vox MagicaVoxel can open.
+
+The starter set (`public/library/`, built by `npx tsx tools/make-library.ts`) is SimCity-style, on the same 16-voxel tile grid as simcity_v2: grass, dirt, sand, water, rocks and meadow tiles; straight, corner, T and crossroad tiles and sidewalk; a house, corner shop, park, apartment block, office tower and factory; trees, pines, street lights, cars, benches and hydrants. Its palette is laid out in blocks (terrain 1-16, roads 17-32, buildings 33-80, props 81-112). Placing a piece keeps its colours: any that differ in your scene go into free palette slots side by side, so a piece's terrain colours stay together as a block in your palette too.
+
+The assistant can list, place and save assets ("lay out two blocks of houses along a road with trees and street lights").
+
 ## Assistant (Claude)
 
 The **Assistant** panel lets you ask Claude to change the scene ("add a lighthouse on the hill", "make the windows glow", "slow orbit at golden hour, 60 frames"). Claude looks at the scene, builds and edits models, sets colours, materials, keyframes and render settings, renders a preview to check its work, and can send the job to the farm. Every change lands in the undo history, and each reply has **Undo this reply**.
@@ -156,6 +164,7 @@ src/
               updates only what moved between animation frames),
               serialize.ts (writes a scene back to .vox), writer.ts (test files), empty.ts
               (new scenes), renderSettings.ts (file settings → app settings)
+  library/    library.ts (starter and saved assets, placing), thumbnail.ts (isometric previews)
   anim/       camera.ts (camera keyframes: interpolation, saving in the .vox)
   assistant/  toolDefs.ts (the tools Claude can use), tools.ts (runs them), client.ts (chat panel
               and the tab's connection to the bridge)
@@ -170,7 +179,7 @@ src/
   farm/       queue.ts (job queue and frame leases)
   ui/         App.svelte (shell), components/ (Viewport, Panel, SettingControl), stores.ts
   lib/        shadcn-svelte components and utils
-tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts,
+tools/        make-test-scenes.ts, make-library.ts (the starter asset library), render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts,
               assistant.ts (MCP server and chat bridge, part of the coordinator)
 cloud/        Cloudflare Worker: the claude.ai connector (sign-in, MCP, relay to your tab)
 rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, settings, renderer, farm)

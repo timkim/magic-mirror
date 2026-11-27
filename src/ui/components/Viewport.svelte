@@ -98,9 +98,13 @@
     s.set('cam.orthoSize', Math.max(1, s.num('cam.orthoSize') * k));
   }
 
+  let stageEl: HTMLElement;
   function drop(e: DragEvent) {
     e.preventDefault();
     dragging = false;
+    const r = stageEl.getBoundingClientRect();
+    const u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
+    for (const h of app.stageDrops) if (h(e, u, v, r.width / r.height)) return;
     for (const f of Array.from(e.dataTransfer?.files ?? [])) app.openFile(f);
   }
 </script>
@@ -116,6 +120,7 @@
 
 <main class="relative grid place-items-center overflow-hidden bg-background [grid-area:view] {dragging ? 'outline-2 -outline-offset-8 outline-ring outline-dashed' : ''}" bind:this={viewport}>
   <div
+    bind:this={stageEl}
     class="relative touch-none bg-black shadow-2xl ring-1 ring-border {$cursor ? '' : 'cursor-grab active:cursor-grabbing'}"
     style:cursor={$cursor}
     style:width="{stage.w}px"

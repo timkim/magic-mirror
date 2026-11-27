@@ -63,6 +63,8 @@ export class App {
   /** The voxel editor (also the API scripts and the assistant use to change the scene). */
   readonly editor: VoxelEditor;
   readonly viewportTools: ViewportTool[] = [];
+  /** Things dropped on the render other than files (e.g. library assets). u, v in 0..1. */
+  readonly stageDrops: ((e: DragEvent, u: number, v: number, aspect: number) => boolean)[] = [];
   /** CSS cursor for the render view while a tool is active (null = orbit cursor). */
   readonly viewportCursor = writable<string | null>(null);
 
@@ -178,9 +180,13 @@ export class App {
     this.loadScene(parseVox(bytes), name, bytes);
   }
 
-  /** Start an empty scene with one blank model to build in. */
-  newScene(size: [number, number, number] = [40, 40, 40]) {
+  /** Start an empty scene with one blank model to build in (or, with null, no models at all). */
+  newScene(size: [number, number, number] | null = [40, 40, 40]) {
     const file = emptyScene();
+    if (!size) {
+      this.loadScene(file, 'untitled.vox', null);
+      return;
+    }
     file.models.push({ size, voxels: new Uint8Array(0) });
     file.nodes.set(2, { kind: 'transform', id: 2, attrs: { _name: 'model' }, childId: 3, layerId: 0, frames: [{ rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], translation: [0, 0, Math.floor(size[2] / 2)] }] });
     file.nodes.set(3, { kind: 'shape', id: 3, attrs: {}, models: [{ modelId: 0 }] });

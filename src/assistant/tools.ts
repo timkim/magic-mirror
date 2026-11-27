@@ -194,6 +194,35 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
       return text('Done.');
     }
 
+    case 'list_assets': {
+      const lib = await import('../library/library');
+      if (!get(lib.assets).length) await lib.loadLibrary();
+      const q = String(a.search ?? '').toLowerCase();
+      return text(
+        get(lib.assets)
+          .filter((x) => (!a.category || x.category === a.category) && (!q || `${x.name} ${x.id} ${x.tags?.join(' ') ?? ''}`.toLowerCase().includes(q)))
+          .map((x) => ({ asset_id: x.id, name: x.name, category: x.category, size: x.size, description: x.description })),
+      );
+    }
+
+    case 'place_asset': {
+      const lib = await import('../library/library');
+      if (!get(lib.assets).length) await lib.loadLibrary();
+      const asset = get(lib.assets).find((x) => x.id === a.asset_id || x.name === a.asset_id);
+      if (!asset) throw new Error(`No asset ${a.asset_id}. Use list_assets.`);
+      const [x, y, z] = a.position;
+      const id = await lib.place(app, asset, [x, y], z, a.rotate ?? 0);
+      app.history.squash(Math.max(0, app.history.size - 1), label(`place ${asset.name}`));
+      return text({ object_id: id });
+    }
+
+    case 'save_asset': {
+      need(app);
+      const lib = await import('../library/library');
+      const saved = await lib.saveToLibrary(app, a.object_id, a.name, a.category ?? 'My assets');
+      return text({ asset_id: saved.id });
+    }
+
     case 'duplicate_object': {
       need(app);
       const id = ed.duplicate(a.object_id, a.offset);

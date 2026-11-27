@@ -11,9 +11,10 @@ import { timelineFeature } from './features/timeline';
 import { farmFeature } from './features/farm';
 import { editorFeature } from './features/editor';
 import { assistantFeature } from './features/assistant';
+import { libraryFeature } from './features/library';
 
 // Order matters only where features share a slot and order value.
-const features = [...coreFeatures, sceneInfoFeature, viewportFeature, environmentFeature, compareFeature, timelineFeature, farmFeature, editorFeature, assistantFeature];
+const features = [...coreFeatures, sceneInfoFeature, viewportFeature, environmentFeature, compareFeature, timelineFeature, farmFeature, editorFeature, assistantFeature, libraryFeature];
 
 const root = document.getElementById('app')!;
 App.create(features)

@@ -16,7 +16,7 @@ export const ASSISTANT_GUIDE = `You are working inside Magic Mirror, a MagicaVox
 
 - Coordinates are integers and Z is up. A scene has models (voxel volumes, each up to 256 per axis) placed by objects (transforms). Several objects can share one model.
 - Voxel edits use the model's own coordinates: 0..size-1 on each axis. Colours are palette indices 1-255; colour 0 erases.
-- Start with get_scene (objects list their group; groups list their members). Use duplicate_object to repeat things (rows of houses, trees) instead of drawing them again. Use set_object to move, turn, hide or re-layer objects and resize_model to give a model more room. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
+- Start with get_scene (objects list their group; groups list their members). For cities, check list_assets first: placing library pieces (roads, buildings, trees, cars) is faster and more consistent than drawing them. Use duplicate_object to repeat things (rows of houses, trees) instead of drawing them again. Use set_object to move, turn, hide or re-layer objects and resize_model to give a model more room. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
 - To build something new, add_model with a size that fits it, then draw into it. Put its bottom on the ground: position z = size z / 2 plus the ground height that get_scene reports.
 - Pick colours from the palette that get_scene describes, or set new ones in unused slots with set_palette (never recolour a slot the scene already uses unless asked).
 - Animation: objects move between keyframes with set_object_animation (MagicaVoxel interpolates position linearly). The camera animates with set_camera_keyframes (orbits, push-ins, crane moves); get_scene shows the keys and the timeline end. The sun, sky and render settings are settings (list_settings, set_settings); set_frame shows a frame. To check a camera move, preview a few frames (set_frame, then render_preview).
@@ -101,6 +101,21 @@ export const TOOL_DEFS: ToolDef[] = [
       properties: { object_id: int('Object id'), move_by: vec3('Voxels to move by'), rotate: { type: 'integer' }, name: { type: 'string' }, hidden: { type: 'boolean' }, layer: { type: 'integer' } },
       required: ['object_id'],
     },
+  },
+  {
+    name: 'list_assets',
+    description: 'The asset library: reusable SimCity-style pieces on a 16-voxel tile grid (terrain and road tiles 16×16, buildings on 16/32 lots, props such as trees, cars, street lights) plus the user\'s own saved assets. Optional category or search text.',
+    inputSchema: { type: 'object', properties: { category: { type: 'string' }, search: { type: 'string' } } },
+  },
+  {
+    name: 'place_asset',
+    description: 'Put a library asset in the scene, centred at position [x, y] with its base on the ground, or at [x, y, z] with its base at height z (e.g. on a rooftop). rotate: quarter turns about Z. Its colours are added to free palette slots if they differ. Returns the new object_id.',
+    inputSchema: { type: 'object', properties: { asset_id: { type: 'string' }, position: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 3 }, rotate: { type: 'integer' } }, required: ['asset_id', 'position'] },
+  },
+  {
+    name: 'save_asset',
+    description: "Save an object or group from the scene into the user's library (My assets) so it can be placed again, in this or other scenes.",
+    inputSchema: { type: 'object', properties: { object_id: int('Object or group id'), name: { type: 'string' }, category: { type: 'string' } }, required: ['object_id', 'name'] },
   },
   {
     name: 'duplicate_object',

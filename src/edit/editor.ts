@@ -429,6 +429,14 @@ export class VoxelEditor {
 
   /** Copy an object or group to the clipboard (kept in this browser, so it pastes into other files too). */
   copy(nodeId: number): Clip {
+    const clip = this.makeClip(nodeId);
+    Clipboard.save(clip);
+    this.host.setStatus('msg', `Copied ${clip.name}`);
+    return clip;
+  }
+
+  /** An object or group as a clip (its nodes, models and colours), without touching the clipboard. */
+  makeClip(nodeId: number): Clip {
     const file = this.host.file!;
     const nodes = this.subtree(nodeId);
     if (nodes[0]?.kind !== 'transform') throw new Error(`No object with id ${nodeId}`);
@@ -446,8 +454,6 @@ export class VoxelEditor {
       center: b.length ? ([0, 1].map((i) => Math.round((Math.min(...b.map((x) => x.lo[i])) + Math.max(...b.map((x) => x.hi[i]))) / 2)) as [number, number]) : [0, 0],
       extent: b.length ? ([0, 1].map((i) => Math.max(...b.map((x) => x.hi[i])) - Math.min(...b.map((x) => x.lo[i])) + 1) as [number, number]) : [8, 8],
     };
-    Clipboard.save(clip);
-    this.host.setStatus('msg', `Copied ${clip.name}`);
     return clip;
   }
 
@@ -456,35 +462,50 @@ export class VoxelEditor {
    * Colours keep their look: an index whose colour differs here is mapped to a matching or free
    * palette slot (taking its material along).
    */
-  paste(at: [number, number], clip = Clipboard.load()): number | null {
+  paste(at: [number, number], clip = Clipboard.load(), bottom?: number): number | null {
     if (!clip) return null;
     const file = this.host.file!;
     const parent = this.rootGroup();
-    // Colour mapping.
+    // Colour mapping: keep an index whose colour already matches, reuse an exact match elsewhere,
+    // and put the rest in free slots, side by side when possible so a block of colours (all the
+    // terrain, say) stays a block in this palette too.
     const same = (i: number, rgba: number[]) => rgba.every((v, k) => file.palette[i * 4 + k] === v);
     const usedHere = new Set<number>();
     for (const m of file.models) for (let i = 3; i < m.voxels.length; i += 4) usedHere.add(m.voxels[i]);
     const remap = new Map<number, number>();
     const newColors: { index: number; rgba: number[]; material?: VoxDict }[] = [];
-    for (const c of clip.colors) {
+    const homeless: typeof clip.colors = [];
+    for (const c of [...clip.colors].sort((a, b) => a.index - b.index)) {
       if (same(c.index, c.rgba)) continue;
       let to = -1;
       for (let i = 1; i < 256 && to < 0; i++) if (same(i, c.rgba)) to = i;
-      if (to < 0) for (let i = 1; i < 256 && to < 0; i++) if (!usedHere.has(i) && !newColors.some((n) => n.index === i) && !clip.colors.some((k) => k.index === i && !same(i, k.rgba) && i !== c.index)) to = i;
+      if (to >= 0) remap.set(c.index, to);
+      else homeless.push(c);
+    }
+    const isFree = (i: number) => !usedHere.has(i) && !remap.has(i) && ![...remap.values()].includes(i);
+    let run = -1;
+    for (let start = 1; start + homeless.length <= 256 && run < 0 && homeless.length; start++) {
+      let ok = true;
+      for (let k = 0; k < homeless.length && ok; k++) ok = isFree(start + k);
+      if (ok) run = start;
+    }
+    homeless.forEach((c, k) => {
+      let to = run >= 0 ? run + k : -1;
+      for (let i = 1; i < 256 && to < 0; i++) if (isFree(i) && !newColors.some((n) => n.index === i)) to = i;
       if (to < 0) to = c.index; // palette full: keep the index
       if (to !== c.index) remap.set(c.index, to);
-      if (!same(to, c.rgba)) newColors.push({ index: to, rgba: c.rgba, material: c.material });
+      newColors.push({ index: to, rgba: c.rgba, material: c.material });
       usedHere.add(to);
-    }
+    });
     const models = new Map<number, VoxModel>();
     for (const m of clip.models) {
       const v = Uint8Array.from(atob(m.voxels), (ch) => ch.charCodeAt(0));
       for (let i = 3; i < v.length; i += 4) v[i] = remap.get(v[i]) ?? v[i];
       models.set(m.id, { size: m.size as V3, voxels: v });
     }
-    const ground = this.host.grid?.origin[2] ?? 0;
+    const ground = bottom ?? this.host.grid?.origin[2] ?? 0;
     // Pasting where it came from would hide it inside the original: put it alongside instead.
-    if (Math.abs(at[0] - clip.center[0]) < 2 && Math.abs(at[1] - clip.center[1]) < 2) at = [at[0] + (clip.extent?.[0] ?? 8) + 2, at[1]];
+    if (bottom === undefined && Math.abs(at[0] - clip.center[0]) < 2 && Math.abs(at[1] - clip.center[1]) < 2) at = [at[0] + (clip.extent?.[0] ?? 8) + 2, at[1]];
     const shift: V3 = [Math.round(at[0]) - clip.center[0], Math.round(at[1]) - clip.center[1], ground - clip.bottom];
     const oldColors = newColors.map((c) => ({ index: c.index, rgba: Array.from(file.palette.subarray(c.index * 4, c.index * 4 + 4)), material: file.materials.get(c.index) }));
     const setColors = (list: typeof newColors) => {
@@ -497,7 +518,7 @@ export class VoxelEditor {
     };
     let made: ReturnType<VoxelEditor['insertCopy']> | null = null;
     this.history.run({
-      label: `Paste ${clip.name}`,
+      label: `${clip.kind === 'magic-mirror-clip' && clip.fromLibrary ? 'Place' : 'Paste'} ${clip.name}`,
       apply: () => {
         setColors(newColors);
         made = this.insertCopy(clip.nodes as SceneNode[], models, parent, (fr) => fr.map((f) => ({ ...f, translation: f.translation.map((v, i) => v + shift[i]) as V3 })));
@@ -537,6 +558,12 @@ export class VoxelEditor {
   private ray(u: number, v: number, aspect: number) {
     const cam = this.host.cameraFrame();
     return cam ? cameraRay(cam, u, v, aspect) : null;
+  }
+
+  /** What's under a point of the render (u, v in 0..1): a voxel, or the ground. */
+  pickAt(u: number, v: number, aspect: number): GridHit | null {
+    const r = this.ray(u, v, aspect);
+    return r && this.host.grid ? castRay(this.host.grid, r.origin, r.dir) : null;
   }
 
   /** Which placed model owns a world voxel (the last one drawn there, like the baker). */
