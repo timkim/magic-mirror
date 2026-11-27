@@ -35,6 +35,26 @@ Then:
 Now any Claude chat can work on your scene, as long as Magic Mirror is open on your PC.
 The Worker's home page shows whether a tab is connected.
 
+## Farm status on your phone
+
+`<your Worker address>/farm` shows your render jobs: progress, time left, which PCs are working
+and the latest frame. Sign in with your key once; the phone remembers it for 30 days.
+
+1. Start the coordinator with reporting on (the key goes in an environment variable, so it
+   isn't in your shell history or the process list):
+   ```sh
+   # PowerShell:  $env:MAGIC_MIRROR_CLOUD_KEY = "<your key>"
+   export MAGIC_MIRROR_CLOUD_KEY=<your key>
+   npm run farm -- --cloud https://magic-mirror.<you>.workers.dev
+   ```
+   It sends status every few seconds while something changes, and a small JPEG of the newest
+   frame every 30 seconds (made with ffmpeg, if installed). Frames and videos stay on your PC.
+2. Open `/farm` on your phone and press **Notify me** to get a notification when a render
+   finishes. On an iPhone, first add the page to your Home Screen (Share → Add to Home Screen)
+   and open it from there; iOS only allows notifications for Home Screen web apps.
+
+You can also just ask Claude ("how's the render going?"): the assistant has a `farm_status` tool.
+
 ## How it works
 
 - `src/index.ts`: OAuth 2.1 sign-in (via `@cloudflare/workers-oauth-provider`, with dynamic
@@ -43,6 +63,9 @@ The Worker's home page shows whether a tab is connected.
 - `src/relay.ts`: a Durable Object that holds the tab's WebSocket (hibernating while idle) and
   forwards tool calls to the most recently active tab. Large results (preview images) arrive in
   parts.
+- `src/farm.ts`: the `/farm` page, its sign-in cookie, the coordinator's report endpoints and the
+  service worker; `src/push.ts`: VAPID-signed Web Push with no payload (the service worker
+  fetches the status and writes the notification), so no third-party push service is involved.
 - Tools are the same as the local bridge's: `../src/assistant/toolDefs.ts`, run in the tab by
   `../src/assistant/tools.ts`. MCP handling is shared: `../src/assistant/mcp.ts`.
 

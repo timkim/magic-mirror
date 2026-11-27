@@ -318,6 +318,26 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
       app.saveVox();
       return text(`Downloaded ${app.fileName} in the browser.`);
 
+    case 'farm_status': {
+      const { farmUrl } = await import('../features/farmClient');
+      let st;
+      try {
+        st = await (await fetch(new URL('/api/status', get(farmUrl)))).json();
+      } catch {
+        throw new Error("Can't reach the render farm coordinator. Is npm run farm running on the PC?");
+      }
+      const online = st.workers.filter((w: { online: boolean }) => w.online).length;
+      return text({
+        jobs: st.jobs.map((j: { name: string; status: string; done: number; total: number; rendering: number; avgFrameMs: number | null; video: string | null }) => ({
+          name: j.name, status: j.status, frames_done: j.done, frames_total: j.total, rendering_now: j.rendering,
+          seconds_per_frame: j.avgFrameMs ? Math.round(j.avgFrameMs / 100) / 10 : null,
+          minutes_left: j.status === 'active' && j.avgFrameMs && online ? Math.round(((j.total - j.done) * j.avgFrameMs) / online / 60000) : null,
+          video_ready: !!j.video,
+        })),
+        workers_online: st.workers.filter((w: { online: boolean }) => w.online).map((w: { name: string; framesDone: number }) => ({ name: w.name, frames_done: w.framesDone })),
+      });
+    }
+
     case 'render_on_farm': {
       const file = need(app);
       void file;

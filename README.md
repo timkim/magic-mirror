@@ -93,6 +93,8 @@ The bridge only accepts connections from the PC it runs on. Use `npm run farm --
 
 ## Magic Prism render farm (network rendering)
 
+On your phone: with the Cloudflare Worker from [`cloud/`](cloud/README.md), start the coordinator with `--cloud <worker address>` and open `<worker address>/farm` for progress, the latest frame and a notification when a render finishes.
+
 Spread an animation's frames across every PC on your home network.
 
 1. **On one PC (the coordinator):**
@@ -197,7 +199,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
-- **Cloud:** farm status on the phone through the same Worker; then the public site (accounts, uploads, storage on R2).
+- **Cloud:** the public site (accounts, uploads, storage on R2); finished videos viewable from the phone.
 - **Editor:** resize, move and rotate models; layers; line and sphere brushes.
 - **Camera:** import and export MagicaVoxel-Animation-Script camera files; roll and focus keys.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.

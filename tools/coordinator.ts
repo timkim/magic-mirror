@@ -5,6 +5,7 @@
 //
 //   npm run build && npm run farm -- [--port 8080] [--out farm-output] [--lease 600]
 //                                    [--claude path/to/claude] [--assistant-lan]
+//                                    [--cloud https://magic-mirror.<you>.workers.dev]  (key: MAGIC_MIRROR_CLOUD_KEY)
 //
 // It also runs the assistant bridge (tools/assistant.ts): the chat panel and an MCP server
 // at /mcp, both using Claude Code on this PC.
@@ -18,8 +19,13 @@ import { networkInterfaces } from 'node:os';
 import { extname, join, normalize, resolve } from 'node:path';
 import { FarmQueue, type JobSpec } from '../src/farm/queue';
 import { createAssistant } from './assistant';
+import { startCloudReporter } from './cloudReport';
 
-interface Options { port: number; out: string; leaseSeconds: number; dist: string; claude: string; assistantLan: boolean }
+interface Options {
+  port: number; out: string; leaseSeconds: number; dist: string; claude: string; assistantLan: boolean;
+  /** Magic Mirror Worker address to report farm status to (phone page + notifications). */
+  cloud?: string; cloudKey?: string;
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png',
@@ -54,7 +60,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
   const o: Options = { port: 8080, out: 'farm-output', leaseSeconds: 600, dist: 'dist', claude: process.env.MAGIC_MIRROR_CLAUDE ?? 'claude', assistantLan: false, ...opts };
   const assistant = createAssistant({ port: o.port, claude: o.claude, lan: o.assistantLan });
   const queue = new FarmQueue(o.leaseSeconds * 1000);
-  const store = new Map<string, { scene?: Buffer; hdr?: Buffer; dir: string }>();
+  const store = new Map<string, { scene?: Buffer; hdr?: Buffer; dir: string; latest?: string }>();
   mkdirSync(o.out, { recursive: true });
 
   const send = (res: ServerResponse, code: number, body?: unknown, type = 'application/json') => {
@@ -158,7 +164,9 @@ export function startCoordinator(opts: Partial<Options> = {}) {
           const worker = url.searchParams.get('worker') ?? 'unknown';
           if (req.method === 'PUT') {
             const png = await readBody(req, 256 * 1024 * 1024);
-            writeFileSync(join(files.dir, `${safeName(job.name)}_${String(frame).padStart(4, '0')}.png`), png);
+            const framePath = join(files.dir, `${safeName(job.name)}_${String(frame).padStart(4, '0')}.png`);
+            writeFileSync(framePath, png);
+            files.latest = framePath;
             const finished = queue.complete(job.id, frame, worker);
             const st = queue.status().jobs.find((j) => j.id === job.id)!;
             console.log(`[prism] ${job.name} frame ${frame} from ${queue.workers.get(worker)?.name ?? worker} (${st.done}/${st.total})`);
@@ -195,7 +203,13 @@ export function startCoordinator(opts: Partial<Options> = {}) {
     console.log(`[prism] Magic Mirror: http://localhost:${o.port}  ·  assistant MCP: http://localhost:${o.port}/mcp`);
     for (const ip of ips) console.log(`[prism] other PCs: open http://${ip}:${o.port}  or run: npm run worker -- http://${ip}:${o.port}`);
   });
-  return { server, queue };
+  let reporter: ReturnType<typeof startCloudReporter> | null = null;
+  if (o.cloud) {
+    if (!o.cloudKey) console.log('[prism] cloud: set MAGIC_MIRROR_CLOUD_KEY (your Magic Mirror key) to report to the Worker');
+    else reporter = startCloudReporter(queue, { url: o.cloud, key: o.cloudKey, latestFrame: (id) => store.get(id)?.latest ?? null });
+  }
+  server.on('close', () => reporter?.stop());
+  return { server, queue, reporter };
 }
 
 if (process.argv[1] && /coordinator\.(ts|mjs)$/.test(process.argv[1])) {
@@ -204,5 +218,6 @@ if (process.argv[1] && /coordinator\.(ts|mjs)$/.test(process.argv[1])) {
   startCoordinator({
     port: Number(get('--port') ?? 8080), out: get('--out') ?? 'farm-output', leaseSeconds: Number(get('--lease') ?? 600),
     claude: get('--claude') ?? process.env.MAGIC_MIRROR_CLAUDE ?? 'claude', assistantLan: a.includes('--assistant-lan'),
+    cloud: get('--cloud') ?? process.env.MAGIC_MIRROR_CLOUD, cloudKey: get('--cloud-key') ?? process.env.MAGIC_MIRROR_CLOUD_KEY,
   });
 }

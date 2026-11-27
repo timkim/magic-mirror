@@ -184,6 +184,11 @@ export const TOOL_DEFS: ToolDef[] = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'farm_status',
+    description: 'Progress of Magic Prism render farm jobs (frames done, frames rendering, average seconds per frame, video ready) and which worker PCs are online.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'render_on_farm',
     description: 'Send frames to the Magic Prism render farm. Defaults: the whole animation, 256 samples, full output size.',
     inputSchema: { type: 'object', properties: { first_frame: { type: 'integer' }, last_frame: { type: 'integer' }, samples: { type: 'integer' }, scale: { type: 'number' } } },

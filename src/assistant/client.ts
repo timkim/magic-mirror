@@ -50,7 +50,7 @@ const short = (name: string, args: Record<string, unknown>) => {
 const LABELS: Record<string, string> = {
   get_scene: 'Looked at the scene', get_model: 'Read a model', set_voxels: 'Set voxels', draw_shapes: 'Drew', add_model: 'New model',
   move_object: 'Moved', set_object_animation: 'Animated', set_palette: 'Palette', set_material: 'Material', list_settings: 'Read settings',
-  set_settings: 'Settings', set_camera_keyframes: 'Camera keys', set_frame: 'Frame', render_preview: 'Rendered a preview', undo: 'Undid', save_vox: 'Saved .vox', render_on_farm: 'Sent to the farm',
+  set_settings: 'Settings', set_camera_keyframes: 'Camera keys', set_frame: 'Frame', render_preview: 'Rendered a preview', undo: 'Undid', save_vox: 'Saved .vox', render_on_farm: 'Sent to the farm', farm_status: 'Checked the farm',
 };
 
 /** Add a part to the reply in progress (or start an "external" one for other Claude apps). */

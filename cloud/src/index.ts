@@ -3,6 +3,7 @@
 //   /mcp        MCP endpoint for claude.ai (OAuth-protected). Tool calls go to the relay.
 //   /authorize  Sign-in: the owner enters their key to let Claude in.
 //   /tab        WebSocket from the Magic Mirror tab (it authenticates with the same key).
+//   /farm       Render farm status for the phone, with notifications (see farm.ts).
 //   /           A short status page.
 //
 // Tools are defined once in ../src/assistant/toolDefs.ts and run in the browser tab.
@@ -10,6 +11,7 @@
 import { OAuthProvider, AuthorizationError, CimdFetchError, type ConsentDescription } from '@cloudflare/workers-oauth-provider';
 import { handleMcpPost } from '../../src/assistant/mcp';
 import { relay, sameSecret, type Env } from './env';
+import { farm } from './farm';
 
 export { Relay } from './relay';
 
@@ -100,6 +102,8 @@ async function authorize(request: Request, env: Env): Promise<Response> {
 const defaultHandler: ExportedHandler<Env> = {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const farmResponse = await farm(request, env);
+    if (farmResponse) return farmResponse;
     if (url.pathname === '/authorize') return authorize(request, env);
     if (url.pathname === '/tab') return relay(env).fetch(request); // the tab sends the key as its first message
     if (url.pathname === '/') {
@@ -108,7 +112,8 @@ const defaultHandler: ExportedHandler<Env> = {
         'Magic Mirror connector',
         `<h1>Magic Mirror connector</h1>
 <p>${tabs ? `<strong>${tabs} Magic Mirror tab${tabs > 1 ? 's' : ''} connected.</strong>` : 'No Magic Mirror tab is connected right now.'}</p>
-<p>In claude.ai, add a custom connector with this address:<br><code>${escape(url.origin)}/mcp</code></p>`,
+<p>In claude.ai, add a custom connector with this address:<br><code>${escape(url.origin)}/mcp</code></p>
+<p><a href="/farm" style="color:#ededed">Farm status →</a></p>`,
       );
     }
     return new Response('Not found', { status: 404 });
