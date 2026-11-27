@@ -70,7 +70,8 @@ export function videoUrl(jobId: string, file: string) {
 }
 
 export async function sendJob(app: App, opts: { firstFrame: number; lastFrame: number; samples: number; scale: number }) {
-  if (!app.fileBytes) return farmMessage.set('Open a .vox first.');
+  const scene = app.voxBytes();
+  if (!scene) return farmMessage.set('Open a .vox first.');
   try {
     farmMessage.set('Uploading…');
     const hasHdr = !!app.environment && app.settings.str('sky.mode') === 'hdr';
@@ -81,7 +82,7 @@ export async function sendJob(app: App, opts: { firstFrame: number; lastFrame: n
     });
     if (!r.ok) throw new Error((await r.json()).error ?? r.statusText);
     const { id } = await r.json();
-    await api(`/api/jobs/${id}/scene`, { method: 'PUT', body: app.fileBytes as Uint8Array<ArrayBuffer> });
+    await api(`/api/jobs/${id}/scene`, { method: 'PUT', body: scene as Uint8Array<ArrayBuffer> });
     if (hasHdr) await api(`/api/jobs/${id}/hdr`, { method: 'PUT', body: app.environment!.bytes as Uint8Array<ArrayBuffer> });
     const s = await api(`/api/jobs/${id}/start`, { method: 'POST' });
     if (!s.ok) throw new Error((await s.json()).error ?? s.statusText);

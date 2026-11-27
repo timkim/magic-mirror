@@ -153,14 +153,14 @@ export interface GridBox {
   max: [number, number, number];
 }
 
-function transformVoxel(file: VoxFile, p: PlacedModel, x: number, y: number, z: number): [number, number, number] {
+export function transformVoxel(file: VoxFile, p: PlacedModel, x: number, y: number, z: number): [number, number, number] {
   const s = file.models[p.modelId].size;
   const w = applyRot(p.rotation, [x - Math.floor(s[0] / 2), y - Math.floor(s[1] / 2), z - Math.floor(s[2] / 2)]);
   return [w[0] + p.translation[0], w[1] + p.translation[1], w[2] + p.translation[2]];
 }
 
 /** World-space inclusive bounds of a placed model. */
-function placementBounds(file: VoxFile, p: PlacedModel) {
+export function placementBounds(file: VoxFile, p: PlacedModel) {
   const s = file.models[p.modelId].size;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const cx of [0, s[0] - 1]) for (const cy of [0, s[1] - 1]) for (const cz of [0, s[2] - 1]) {
@@ -228,6 +228,32 @@ export class SceneBaker {
     return boxes;
   }
 
+  /** Every model placed at the current frame, in scene order. */
+  get placements(): readonly PlacedModel[] {
+    return this.placed;
+  }
+
+  /**
+   * After a model's voxels changed: re-stamp everywhere it's placed. Returns the changed grid
+   * regions, or null when the model no longer fits the grid (rebuild the baker instead).
+   * Size changes need a new baker too, since pivots move.
+   */
+  refreshModels(modelIds: number[]): GridBox[] | null {
+    const g = this.grid;
+    const boxes: GridBox[] = [];
+    for (const p of this.placed) {
+      if (!modelIds.includes(p.modelId)) continue;
+      const b = placementBounds(this.file, p);
+      for (let i = 0; i < 3; i++) if (b.lo[i] < g.origin[i] || b.hi[i] - g.origin[i] >= g.dims[i]) return null;
+      boxes.push({
+        min: [0, 1, 2].map((i) => b.lo[i] - g.origin[i]) as [number, number, number],
+        max: [0, 1, 2].map((i) => b.hi[i] - g.origin[i]) as [number, number, number],
+      });
+    }
+    this.rebuild(boxes);
+    return boxes;
+  }
+
   /** Clear each box and stamp every model that touches it (in scene order, like a full build). */
   private rebuild(boxes: GridBox[]) {
     const g = this.grid, [dx, dy] = g.dims, o = g.origin;
@@ -257,4 +283,12 @@ export class SceneBaker {
       }
     }
   }
+}
+
+/** World voxel -> the model's own voxel coordinates (inverse of transformVoxel). */
+export function worldToModel(file: VoxFile, p: PlacedModel, w: [number, number, number]): [number, number, number] {
+  const s = file.models[p.modelId].size, r = p.rotation;
+  const d = [w[0] - p.translation[0], w[1] - p.translation[1], w[2] - p.translation[2]];
+  // Rotations are orthogonal, so the inverse is the transpose.
+  return [0, 1, 2].map((j) => r[j] * d[0] + r[3 + j] * d[1] + r[6 + j] * d[2] + Math.floor(s[j] / 2)) as [number, number, number];
 }

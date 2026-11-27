@@ -53,6 +53,18 @@ class Reader {
   }
 }
 
+/** Inverse of decodeRotation. */
+export function encodeRotation(m: Rot3): number {
+  let r = 0;
+  for (let row = 0; row < 3; row++) {
+    const col = [0, 1, 2].find((c) => m[row * 3 + c] !== 0) ?? row;
+    if (row === 0) r |= col;
+    if (row === 1) r |= col << 2;
+    if (m[row * 3 + col] < 0) r |= 16 << row;
+  }
+  return r;
+}
+
 /** Decode the nTRN `_r` rotation byte into a row-major 3x3 matrix. */
 export function decodeRotation(r: number): Rot3 {
   const c0 = r & 3;
@@ -103,6 +115,8 @@ export function parseVox(input: ArrayBuffer | Uint8Array): VoxFile {
       const contentStart = r.pos;
       const contentEnd = contentStart + contentSize;
       const c = new Reader(bytes, contentStart, contentEnd);
+      if (!['MAIN', 'SIZE', 'XYZI', 'nTRN', 'nGRP', 'nSHP'].includes(id))
+        (file.trailing ??= []).push({ id, content: bytes.slice(contentStart, contentEnd) });
 
       switch (id) {
         case 'MAIN':
@@ -124,6 +138,7 @@ export function parseVox(input: ArrayBuffer | Uint8Array): VoxFile {
           // Entry k in the chunk is colour index k+1.
           for (let k = 0; k < 255; k++) pal.set(raw.subarray(k * 4, k * 4 + 4), (k + 1) * 4);
           file.palette = pal;
+          if (raw.length >= 1024) file.paletteTail = raw.slice(1020, 1024);
           break;
         }
         case 'MATL': {
@@ -145,6 +160,7 @@ export function parseVox(input: ArrayBuffer | Uint8Array): VoxFile {
               rotation: f._r !== undefined ? decodeRotation(Number(f._r)) : IDENTITY_ROT,
               translation: parseVec3(f._t),
               frame: f._f !== undefined ? Number(f._f) : undefined,
+              attrs: f,
             });
           }
           if (frames.length === 0) frames.push({ rotation: IDENTITY_ROT, translation: [0, 0, 0] as [number, number, number], frame: undefined });
@@ -168,7 +184,7 @@ export function parseVox(input: ArrayBuffer | Uint8Array): VoxFile {
           for (let i = 0; i < n; i++) {
             const modelId = c.int32();
             const d = c.dict();
-            models.push({ modelId, frame: d._f !== undefined ? Number(d._f) : undefined });
+            models.push({ modelId, frame: d._f !== undefined ? Number(d._f) : undefined, attrs: d });
           }
           file.nodes.set(nid, { kind: 'shape', id: nid, attrs, models } as SceneNode);
           break;

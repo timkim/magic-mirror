@@ -9,6 +9,7 @@
   const outputSize = app.outputSize;
   const scene = app.scene;
   const overlays = app.ui('stage');
+  const cursor = app.viewportCursor;
 
   let viewport: HTMLElement;
   let canvas: HTMLCanvasElement;
@@ -34,14 +35,41 @@
 
   const s = app.settings;
   let drag: { x: number; y: number; pan: boolean } | null = null;
+  let toolDrag: (typeof app.viewportTools)[number] | null = null;
+  const activeTool = () => app.viewportTools.find((t) => t.active()) ?? null;
+
+  function uv(e: PointerEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, r.width / r.height] as const;
+  }
 
   function pointerdown(e: PointerEvent) {
-    drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const tool = activeTool();
+    if (tool) {
+      // Editing: left button edits, right-drag orbits, middle or Shift+right pans.
+      if (e.button === 0 && tool.pointerDown(...uv(e), e)) {
+        toolDrag = tool;
+        return;
+      }
+      drag = { x: e.clientX, y: e.clientY, pan: e.button === 1 || (e.button === 2 && e.shiftKey) };
+      return;
+    }
+    drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.button === 1 || e.shiftKey };
+  }
+
+  function pointerup(e: PointerEvent) {
+    toolDrag?.pointerUp(e);
+    toolDrag = null;
+    drag = null;
   }
 
   function pointermove(e: PointerEvent) {
-    if (!drag) return;
+    if (toolDrag) return toolDrag.pointerMove(...uv(e), e);
+    if (!drag) {
+      activeTool()?.pointerMove(...uv(e), e);
+      return;
+    }
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     drag.x = e.clientX;
     drag.y = e.clientY;
@@ -88,14 +116,16 @@
 
 <main class="relative grid place-items-center overflow-hidden bg-background [grid-area:view] {dragging ? 'outline-2 -outline-offset-8 outline-ring outline-dashed' : ''}" bind:this={viewport}>
   <div
-    class="relative cursor-grab touch-none bg-black shadow-2xl ring-1 ring-border active:cursor-grabbing"
+    class="relative touch-none bg-black shadow-2xl ring-1 ring-border {$cursor ? '' : 'cursor-grab active:cursor-grabbing'}"
+    style:cursor={$cursor}
     style:width="{stage.w}px"
     style:height="{stage.h}px"
     role="application"
     aria-label="Render view: drag to orbit, right-drag to pan, scroll to zoom"
     onpointerdown={pointerdown}
     onpointermove={pointermove}
-    onpointerup={() => (drag = null)}
+    onpointerup={pointerup}
+    onpointerleave={() => activeTool()?.leave?.()}
     oncontextmenu={(e) => e.preventDefault()}
     onwheel={wheel}
   >

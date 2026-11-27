@@ -12,6 +12,10 @@ import { loadHdrEnvironment } from './render/hdr';
 import { parseVox } from './vox/parser';
 import { SceneBaker, type VoxelGrid } from './vox/scene';
 import type { VoxFile } from './vox/types';
+import { serializeVox } from './vox/serialize';
+import { emptyScene } from './vox/empty';
+import { History } from './edit/history';
+import { VoxelEditor } from './edit/editor';
 
 type Events = {
   sceneLoaded: (file: VoxFile, grid: VoxelGrid, name: string) => void;
@@ -24,6 +28,17 @@ export interface FileHandler {
   /** Return true if this handler takes the dropped/opened file. */
   accepts(file: File): boolean;
   open(file: File): void | Promise<void>;
+}
+
+/** Something that takes pointer input on the render before orbiting (e.g. the voxel editor). */
+export interface ViewportTool {
+  /** u, v in 0..1 from the image's top-left; aspect = width / height. Return true to take the drag. */
+  pointerDown(u: number, v: number, aspect: number, e: PointerEvent): boolean;
+  pointerMove(u: number, v: number, aspect: number, e: PointerEvent): void;
+  pointerUp(e: PointerEvent): void;
+  leave?(): void;
+  /** While active, left-drag goes to the tool and right-drag orbits. */
+  active(): boolean;
 }
 
 export interface SceneInfo {
@@ -42,6 +57,13 @@ export class App {
   /** The loaded HDR sky image, if any. */
   environment: { name: string; bytes: Uint8Array } | null = null;
   grid: VoxelGrid | null = null;
+  /** Undo/redo for every scene change. */
+  readonly history = new History();
+  /** The voxel editor (also the API scripts and the assistant use to change the scene). */
+  readonly editor: VoxelEditor;
+  readonly viewportTools: ViewportTool[] = [];
+  /** CSS cursor for the render view while a tool is active (null = orbit cursor). */
+  readonly viewportCursor = writable<string | null>(null);
 
   /** Status bar fields, keyed by id. */
   readonly status = writable<Record<string, string>>({});
@@ -58,11 +80,27 @@ export class App {
   private listeners: { [K in keyof Events]: Events[K][] } = { sceneLoaded: [], environmentLoaded: [], frame: [] };
   private fileHandlers: FileHandler[] = [];
   private lastTime = performance.now();
+  private inFlight = 0;
   private sampleTimer = { samples: 0, since: performance.now(), rate: 0 };
 
   private constructor(private device: GPUDevice, readonly features: Feature[]) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const app = this;
     this.settings = createSettings(features);
     this.renderer = new Renderer(device, navigator.gpu.getPreferredCanvasFormat());
+    this.editor = new VoxelEditor(
+      {
+        get file() { return app.file; },
+        get grid() { return app.grid; },
+        placements: () => this.baker?.placements ?? [],
+        cameraFrame: () => (this.grid ? frameFromSettings(this.settings, this.grid).camera : null),
+        modelsChanged: (ids) => this.modelsChanged(ids),
+        materialsChanged: () => this.file && this.renderer.setMaterials(this.file.palette, this.file.materials),
+        structureChanged: () => this.rebake(),
+        setStatus: (id, text) => this.setStatus(id, text),
+      },
+      this.history,
+    );
     this.settings.onChange((key) => {
       const def = this.settings.def(key);
       if (key === 'anim.frame') this.rebuildGrid();
@@ -133,10 +171,27 @@ export class App {
   }
 
   openVox(bytes: Uint8Array, name: string) {
-    const file = parseVox(bytes);
+    this.loadScene(parseVox(bytes), name, bytes);
+  }
+
+  /** Start an empty scene with one blank model to build in. */
+  newScene(size: [number, number, number] = [40, 40, 40]) {
+    const file = emptyScene();
+    file.models.push({ size, voxels: new Uint8Array(0) });
+    file.nodes.set(2, { kind: 'transform', id: 2, attrs: { _name: 'model' }, childId: 3, layerId: 0, frames: [{ rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], translation: [0, 0, Math.floor(size[2] / 2)] }] });
+    file.nodes.set(3, { kind: 'shape', id: 3, attrs: {}, models: [{ modelId: 0 }] });
+    (file.nodes.get(1) as { childIds: number[] }).childIds.push(2);
+    this.loadScene(file, 'untitled.vox', null);
+    this.editor.enabled.set(true);
+    this.editor.selected.set(0);
+  }
+
+  private loadScene(file: VoxFile, name: string, bytes: Uint8Array | null) {
     this.file = file;
     this.fileName = name;
     this.fileBytes = bytes;
+    this.history.clear();
+    this.editor.reset();
     this.baker = new SceneBaker(file, this.settings.num('anim.frame'));
     this.grid = this.baker.grid;
     for (const f of this.features) f.onSceneLoaded?.(file, this.grid, this.settings);
@@ -145,6 +200,40 @@ export class App {
     for (const cb of this.listeners.sceneLoaded) cb(file, this.grid, name);
     this.scene.set({ file, grid: this.grid, name });
     this.setStatus('msg', `${name}: ${this.grid.voxelCount.toLocaleString()} voxels`);
+  }
+
+  /** The scene as .vox bytes, including any edits. */
+  voxBytes(): Uint8Array | null {
+    if (!this.file) return null;
+    if (!this.fileBytes || this.history.dirty) this.fileBytes = serializeVox(this.file);
+    this.history.dirty = false;
+    return this.fileBytes;
+  }
+
+  /** Download the scene (with edits) as a .vox MagicaVoxel can open. */
+  saveVox() {
+    const bytes = this.voxBytes();
+    if (!bytes) return;
+    download(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/octet-stream' }), this.fileName || 'scene.vox');
+    this.setStatus('msg', `Saved ${this.fileName}`);
+  }
+
+  private modelsChanged(ids: number[]) {
+    const boxes = this.baker?.refreshModels(ids);
+    if (boxes === null) return this.rebake();
+    if (boxes) this.renderer.updateRegions(boxes);
+    this.setStatus('voxels', `${this.grid?.voxelCount.toLocaleString()} voxels`);
+  }
+
+  /** Rebuild the grid after the scene graph or a model's size changed, keeping the view. */
+  private rebake() {
+    if (!this.file) return;
+    this.baker = new SceneBaker(this.file, this.settings.num('anim.frame'));
+    this.grid = this.baker.grid;
+    this.renderer.setScene(this.grid, this.file.palette, this.file.materials);
+    this.frameDirty = true;
+    this.scene.set({ file: this.file, grid: this.grid, name: this.fileName });
+    this.setStatus('voxels', `${this.grid.voxelCount.toLocaleString()} voxels`);
   }
 
   private rebuildGrid() {
@@ -210,13 +299,17 @@ export class App {
     }
 
     let n = 0;
-    if (this.renderer.ready) {
+    // Keep at most two frames queued on the GPU. Without this a slow GPU builds an endless
+    // backlog and readbacks (Save PNG, farm frames) wait behind it.
+    if (this.renderer.ready && this.inFlight < 2) {
       const enc = this.renderer.device.createCommandEncoder();
       const remaining = this.settings.num('rt.maxSamples') - this.renderer.samples;
       n = Math.max(0, Math.min(this.settings.num('rt.samplesPerFrame'), remaining));
       this.renderer.trace(enc, n);
       if (this.context) this.renderer.present(enc, this.context.getCurrentTexture().createView(), postFromSettings(this.settings));
       this.renderer.device.queue.submit([enc.finish()]);
+      this.inFlight++;
+      this.renderer.device.queue.onSubmittedWorkDone().then(() => this.inFlight--);
       this.sampleTimer.samples += n;
     }
     for (const cb of this.listeners.frame) cb(dt);

@@ -47,6 +47,25 @@ npm run build                # static build in dist/
 
 `npm run render` renders with no browser through Dawn (the `webgpu` npm package). The Node tools are bundled with esbuild and run with plain `node`, because Dawn's GPU threads don't get along with `tsx`.
 
+## Editing voxels
+
+Magic Mirror has a voxel editor modelled on MagicaVoxel's model mode. Turn on **Edit** in the toolbar (or press Tab), click a model to edit it, then:
+
+| Do this | How |
+|---|---|
+| Add, remove or recolour voxels | **Attach** (A), **Erase** (E), **Paint** (P) |
+| Brush | **Voxel** (V, drag to draw on the plane you started on), **Box** (B, drag a rectangle), **Face** (F, the whole same-coloured face) |
+| Mirror | X, Y, Z buttons or keys, across the model's centre |
+| Edit another model | Ctrl+click it; Esc to stop editing |
+| Pick a colour from the scene | Alt+click |
+| Orbit / pan while editing | right-drag / middle-drag (or Shift+right-drag) |
+| Undo / redo | Ctrl+Z / Ctrl+Shift+Z |
+| Save | **Save .vox** (Ctrl+S): the file still opens in MagicaVoxel |
+
+The **Palette** panel edits colours and materials (diffuse, metal, glass, emit, blend, media). **New** starts an empty scene, and **Add** in the Edit panel puts a new empty model at the camera target. Saving keeps everything Magic Mirror doesn't edit: an untouched file comes back byte for byte, and edited files are sent to the render farm automatically.
+
+Every change goes through one undo history, and the same calls the tools use are there for scripts (and the coming assistant): `app.editor.setVoxels(modelId, [[x, y, z, colour], …])`, `setColor`, `setMaterial` and `addModel`.
+
 ## Magic Prism render farm (network rendering)
 
 Spread an animation's frames across every PC on your home network.
@@ -103,12 +122,16 @@ cargo build --release          # → rust/target/release/prism (prism.exe on Win
 src/
   vox/        parser.ts (reads .vox), scene.ts (scene graph → world voxel grid; SceneBaker
               updates only what moved between animation frames),
-              writer.ts (writes test files), renderSettings.ts (file settings → app settings)
+              serialize.ts (writes a scene back to .vox), writer.ts (test files), empty.ts
+              (new scenes), renderSettings.ts (file settings → app settings)
+  edit/       editor.ts (voxel tools and the scripting API), history.ts (undo/redo),
+              volume.ts (dense model editing), pick.ts (camera rays, projection, picking)
   render/     renderer.ts (GPU, no DOM), shaders/ (path tracer, bloom, present pass),
               params.ts (settings → renderer inputs), materials.ts, hdr.ts, readback.ts
   core/       settings.ts (schema-driven settings), feature.ts (the extension interface)
   features/   core.ts (camera, sun, sky, ground & fog, render, image), viewport.ts, compare.ts,
-              sceneInfo.ts, environment.ts (HDR sky), timeline.ts, farm.ts (render farm panel)
+              sceneInfo.ts, environment.ts (HDR sky), timeline.ts, farm.ts (render farm panel),
+              editor.ts (edit toolbar, panels and outlines)
   farm/       queue.ts (job queue and frame leases)
   ui/         App.svelte (shell), components/ (Viewport, Panel, SettingControl), stores.ts
   lib/        shadcn-svelte components and utils
@@ -142,6 +165,8 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
+- **Assistant:** a chat panel where Claude changes the scene through the editor's commands (camera moves and keyframes, materials, building models), connected through MCP so it runs on your own Claude plan.
+- **Editor:** resize, move and rotate models; layers; line and sphere brushes; camera keyframes on the timeline.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
 - **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.
 - **Big scenes:** sparse bricks instead of the dense grid; streaming.

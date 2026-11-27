@@ -168,6 +168,12 @@ export class Renderer {
     this.reset();
   }
 
+  /** Re-upload the palette and materials (after colour or material edits). */
+  setMaterials(palette: Uint8Array, materials: Map<number, VoxDict>) {
+    this.device.queue.writeBuffer(this.materials, 0, buildMaterialTable(palette, materials) as Float32Array<ArrayBuffer>);
+    this.reset();
+  }
+
   /**
    * Re-upload only the changed parts of the grid set with setScene (same grid object,
    * e.g. after SceneBaker.setTime). Much faster than setScene for animation.
@@ -204,6 +210,7 @@ export class Renderer {
             bsub[(i - lo[0]) + bsx * ((j - lo[1]) + bsy * (k - lo[2]))] = occ;
           }
       d.queue.writeTexture({ texture: this.brickTex, origin: lo as [number, number, number] }, bsub, { bytesPerRow: bsx, rowsPerImage: bsy }, [bsx, bsy, bsz]);
+      this.reset();
     }
     this.reset();
   }

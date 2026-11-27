@@ -17,6 +17,8 @@ export interface TransformFrame {
   translation: [number, number, number];
   /** Keyframe number (undefined for static nodes). */
   frame?: number;
+  /** The frame's DICT as read from the file (other keys are kept when saving). */
+  attrs?: VoxDict;
 }
 
 export interface TransformNode {
@@ -39,7 +41,7 @@ export interface ShapeNode {
   kind: 'shape';
   id: number;
   attrs: VoxDict;
-  models: { modelId: number; frame?: number }[];
+  models: { modelId: number; frame?: number; attrs?: VoxDict }[];
 }
 
 export type SceneNode = TransformNode | GroupNode | ShapeNode;
@@ -69,4 +71,11 @@ export interface VoxFile {
   cameras: VoxCamera[];
   /** Chunk ids we saw but don't interpret yet (useful when adding features). */
   unknownChunks: string[];
+  /**
+   * Every chunk after the scene graph (LAYR, RGBA, IMAP, MATL, rOBJ, rCAM, NOTE, unknown) in file
+   * order with its raw content, so saving keeps what we don't edit byte for byte.
+   */
+  trailing?: { id: string; content: Uint8Array }[];
+  /** RGBA entry 256, which no voxel can use but MagicaVoxel still stores. */
+  paletteTail?: Uint8Array;
 }
