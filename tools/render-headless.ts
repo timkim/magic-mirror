@@ -25,12 +25,14 @@ function parseArgs(argv: string[]) {
   let hdr: string | undefined;
   let frames: [number, number] | undefined;
   let settingsFile: string | undefined;
+  let dumpSettings: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--samples') samples = Number(argv[++i]);
     else if (a === '--frame') frame = Number(argv[++i]);
     else if (a === '--hdr') hdr = argv[++i];
     else if (a === '--settings') settingsFile = argv[++i];
+    else if (a === '--dump-settings') dumpSettings = argv[++i];
     else if (a === '--frames') { const [x, y] = argv[++i].split('-').map(Number); frames = [x, Number.isFinite(y) ? y : x]; }
     else if (a === '--set') { const [k, ...v] = argv[++i].split('='); sets[k] = v.join('='); }
     else pos.push(a);
@@ -39,7 +41,7 @@ function parseArgs(argv: string[]) {
     console.error('usage: render-headless <in.vox> <out.png> [--samples N] [--frame N | --frames A-B] [--hdr sky.hdr] [--settings snapshot.json] [--set key=value]');
     process.exit(1);
   }
-  return { input: pos[0], output: pos[1], samples, frame, sets, hdr, frames, settingsFile };
+  return { input: pos[0], output: pos[1], samples, frame, sets, hdr, frames, settingsFile, dumpSettings };
 }
 
 /** frames/city_####.png → frames/city_0007.png; without #### the number goes before .png */
@@ -74,6 +76,10 @@ export async function main() {
     settings.set(k, val);
   }
 
+  if (args.hdr && !args.sets['sky.mode']) settings.set('sky.mode', 'hdr');
+  // Write the resolved settings (file defaults + --settings + --set) for other renderers.
+  if (args.dumpSettings) writeFileSync(args.dumpSettings, JSON.stringify(settings.snapshot(), null, 2));
+
   const errs = await Renderer.shaderErrors(device);
   if (errs.length) throw new Error('Shader errors:\n' + errs.join('\n'));
 
@@ -81,7 +87,6 @@ export async function main() {
   const renderer = new Renderer(device, 'rgba8unorm');
   if (args.hdr) {
     renderer.setEnvironment(loadHdrEnvironment(readFileSync(args.hdr)));
-    if (!args.sets['sky.mode']) settings.set('sky.mode', 'hdr');
   }
   renderer.resize(w, h);
 

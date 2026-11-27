@@ -26,6 +26,7 @@ export const farmFeature: Feature = {
       <label class="mm-row" title="Samples per frame"><span class="mm-label">Samples</span><input class="mm-spp" type="number" min="1" value="256"></label>
       <label class="mm-row" title="1 = full output resolution"><span class="mm-label">Scale</span><input class="mm-scale" type="number" min="0.1" max="1" step="0.05" value="1"></label>
       <button class="mm-send">Send to farm</button>
+      <button class="mm-save-settings" title="Save every setting as JSON, for: mm-worker render scene.vox out.png --settings settings.json">Save settings</button>
       <label class="mm-row" title="Render frames for the farm in this tab"><span class="mm-label">Join as worker</span><input class="mm-join" type="checkbox"></label>
       <div class="mm-farm-status mm-muted">Not connected.</div>`;
     const $ = <T extends HTMLElement>(sel: string) => b.querySelector(sel) as T;
@@ -74,6 +75,15 @@ export const farmFeature: Feature = {
       } catch (e) {
         statusEl.textContent = `Couldn't reach the farm: ${(e as Error).message}`;
       }
+    });
+
+    $<HTMLButtonElement>('.mm-save-settings').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(app.settings.snapshot(), null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.download = `${app.fileName.replace(/\.vox$/i, '') || 'scene'}-settings.json`;
+      a.href = URL.createObjectURL(blob);
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     });
 
     // Progress list

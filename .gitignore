@@ -5,3 +5,4 @@ out/
 .DS_Store
 farm-output/
 .build/
+rust/target/

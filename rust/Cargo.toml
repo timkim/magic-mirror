@@ -1,0 +1,24 @@
+[package]
+name = "magic-mirror-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Native render farm worker and renderer for Magic Mirror (wgpu)"
+license = "MIT"
+build = "build.rs"
+
+[[bin]]
+name = "mm-worker"
+path = "src/main.rs"
+
+[dependencies]
+wgpu = "30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.18"
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"
+half = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

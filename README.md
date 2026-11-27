@@ -50,6 +50,7 @@ Spread an animation's frames across every PC on your home network.
 2. **On each PC that should help render**, either:
    - open that address in Chrome or Edge, expand **Render farm** in the left column and tick **Join as worker** (keep the tab visible), or
    - run a worker with no browser: `npm run worker -- http://192.168.1.20:8080 --name office-pc`
+   - or run the native worker: `mm-worker http://192.168.1.20:8080` (see below)
 3. **Send a job** from any copy of the app: open the scene, set it up (camera slot, HDR sky, settings), expand **Render farm**, choose frames, samples and scale, and press **Send to farm**.
 
 Workers take one frame at a time, so faster PCs simply do more. A frame that isn't returned within 10 minutes (`--lease 600`) goes to another worker, and a headless worker renders each frame in a fresh process so a GPU crash only costs that frame. Finished frames land in `farm-output/<job>/<name>_0000.png`; when every frame is in, the coordinator makes an `.mp4` if `ffmpeg` is installed, and the panel shows a **video** link. The coordinator has no login, so only run it on a network you trust.
@@ -70,6 +71,23 @@ Workers take one frame at a time, so faster PCs simply do more. A frame that isn
 
 The **File render settings** panel lists the raw `rOBJ`/`rCAM` dictionaries stored in the open file, so you can see which keys MagicaVoxel wrote.
 
+## Native worker (Rust)
+
+`rust/` is a native renderer and farm worker built on [wgpu](https://wgpu.rs) (Vulkan, DirectX 12 or Metal). It runs the **same WGSL shaders** as the app (extracted from `src/render/shaders` at build time), so its frames match the browser and Node renderers pixel for pixel. Compared with the Node worker it keeps the GPU and the scene loaded between frames instead of reloading for every frame, needs no Node install, and is one file you can copy to each PC.
+
+```bash
+cd rust
+cargo build --release          # → rust/target/release/mm-worker (mm-worker.exe on Windows)
+
+# join a render farm
+./target/release/mm-worker http://192.168.1.20:8080 --name office-pc
+
+# render locally with the app's settings (Render farm panel → Save settings)
+./target/release/mm-worker render city.vox out/city_####.png --settings city-settings.json --frames 0-29 --samples 256
+```
+
+`render` takes the same options as `npm run render`: `--frame N` or `--frames A-B`, `--samples N`, `--hdr sky.hdr` and `--set key=value`. Build it on each platform you want to run it on (or cross-compile); the shaders are embedded, so the binary needs nothing else.
+
 ## How it's built
 
 ```
@@ -85,6 +103,7 @@ src/
   farm/       queue.ts (job queue and frame leases)
   ui/         layout.ts (toolbar, docked panels, status bar), settingsPanel.ts (auto-built controls)
 tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts
+rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, settings, renderer, farm)
 test-scenes/  one small scene per feature being matched
 ```
 
