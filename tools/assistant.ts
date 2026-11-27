@@ -15,7 +15,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ASSISTANT_GUIDE, TOOL_DEFS } from '../src/assistant/toolDefs';
+import { ASSISTANT_GUIDE } from '../src/assistant/toolDefs';
+import { handleMcpPost, NO_TAB_MESSAGE } from '../src/assistant/mcp';
 
 export interface AssistantOptions {
   port: number;
@@ -73,7 +74,7 @@ export function createAssistant(o: AssistantOptions) {
   function callTab(name: string, args: unknown): Promise<{ content: unknown[]; isError?: boolean }> {
     const tab = activeTab();
     if (!tab)
-      return Promise.resolve({ isError: true, content: [{ type: 'text', text: 'Magic Mirror is not open. Ask the user to open it in a browser (it connects to this PC automatically).' }] });
+      return Promise.resolve({ isError: true, content: [{ type: 'text', text: NO_TAB_MESSAGE }] });
     const id = randomUUID();
     return new Promise((ok) => {
       const timer = setTimeout(() => {
@@ -83,32 +84,6 @@ export function createAssistant(o: AssistantOptions) {
       pending.set(id, { ok: ok as (v: unknown) => void, timer });
       tab.res.write(`event: call\ndata: ${JSON.stringify({ id, name, args })}\n\n`);
     });
-  }
-
-  // ---- MCP (JSON-RPC over HTTP POST) ----------------------------------------------------------
-  async function mcp(msg: { id?: number | string; method: string; params?: Record<string, unknown> }) {
-    const reply = (result: unknown) => ({ jsonrpc: '2.0', id: msg.id, result });
-    switch (msg.method) {
-      case 'initialize':
-        return reply({
-          protocolVersion: (msg.params?.protocolVersion as string) ?? '2025-06-18',
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'magic-mirror', version: '0.2.0' },
-          instructions: ASSISTANT_GUIDE,
-        });
-      case 'ping':
-        return reply({});
-      case 'tools/list':
-        return reply({ tools: TOOL_DEFS });
-      case 'tools/call': {
-        const name = String(msg.params?.name ?? '');
-        if (!TOOL_DEFS.some((t) => t.name === name)) return { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `Unknown tool ${name}` } };
-        return reply(await callTab(name, msg.params?.arguments ?? {}));
-      }
-      default:
-        if (msg.id === undefined) return null; // notification
-        return { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } };
-    }
   }
 
   // ---- Chat: run Claude Code with our MCP server ------------------------------------------------
@@ -167,12 +142,9 @@ export function createAssistant(o: AssistantOptions) {
 
     if (path === '/mcp') {
       if (req.method !== 'POST') { json(res, 405, { error: 'POST JSON-RPC messages to /mcp' }, { Allow: 'POST' }); return true; }
-      let parsed: unknown;
-      try { parsed = JSON.parse(await body(req)); } catch { json(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return true; }
-      const batch = Array.isArray(parsed) ? parsed : [parsed];
-      const out = (await Promise.all(batch.map((m) => mcp(m)))).filter(Boolean);
-      if (out.length === 0) { res.writeHead(202, { 'Access-Control-Allow-Origin': '*' }); res.end(); }
-      else json(res, 200, Array.isArray(parsed) ? out : out[0]);
+      const r = await handleMcpPost(await body(req), callTab);
+      if (r.body === null) { res.writeHead(r.status, { 'Access-Control-Allow-Origin': '*' }); res.end(); }
+      else json(res, r.status, r.body);
       return true;
     }
 

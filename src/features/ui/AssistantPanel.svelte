@@ -9,7 +9,8 @@
   import Undo2Icon from '@lucide/svelte/icons/undo-2';
   import PlusIcon from '@lucide/svelte/icons/plus';
   import WrenchIcon from '@lucide/svelte/icons/wrench';
-  import { bridge, busy, messages, newChat, send, stop, undoReply, type Message } from '../../assistant/client';
+  import { bridge, busy, cloud, cloudUrl, connectCloud, disconnectCloud, messages, newChat, send, stop, undoReply, type Message } from '../../assistant/client';
+  import SmartphoneIcon from '@lucide/svelte/icons/smartphone';
   import { farmUrl } from '../farmClient';
 
   let { app }: { app: App } = $props();
@@ -17,6 +18,9 @@
   let input = $state('');
   let list: HTMLElement;
   let showConnect = $state(false);
+  let showPhone = $state(false);
+  let phoneUrl = $state($cloudUrl);
+  let phoneKey = $state('');
   let mcpUrl = $derived(new URL('/mcp', $farmUrl).toString());
   // The client updates messages in place, so give the view fresh objects on every change.
   let view = $derived($messages.map((m) => ({ ...m, src: m, parts: m.parts.map((p) => ({ ...p })) })));
@@ -41,6 +45,7 @@
     <span class="flex-1 truncate">
       {#if $bridge.state === 'ready'}Claude Code on this PC{:else if $bridge.state === 'no-claude'}Claude Code isn't installed{:else if $bridge.state === 'connecting'}Connecting…{:else}Not connected{/if}
     </span>
+    <Button size="icon-xs" variant="ghost" class={$cloud.state === 'ready' ? 'text-emerald-500' : $cloud.state === 'error' ? 'text-red-500' : ''} title={$cloud.state === 'ready' ? 'Phone access is on' : 'Phone access: let claude.ai on any device use this tab'} aria-label="Phone access" onclick={() => (showPhone = !showPhone)}><SmartphoneIcon /></Button>
     <Button size="icon-xs" variant="ghost" title="Use these tools from Claude desktop or Claude Code" aria-label="Connect other Claude apps" onclick={() => (showConnect = !showConnect)}><WrenchIcon /></Button>
     <Button size="icon-xs" variant="ghost" title="New chat" aria-label="New chat" onclick={newChat} disabled={$busy}><PlusIcon /></Button>
   </div>
@@ -54,6 +59,24 @@
       {/if}
       <p class="m-0">To drive this tab from Claude Code or the desktop app, add this MCP server:</p>
       <code class="block rounded bg-muted p-1.5 break-all text-foreground select-all">claude mcp add --transport http magic-mirror {mcpUrl}</code>
+    </div>
+  {/if}
+
+  {#if showPhone}
+    <div class="grid gap-1.5 rounded-md border border-border p-2 leading-relaxed text-muted-foreground">
+      <p class="m-0 font-medium text-foreground">Phone access</p>
+      {#if $cloud.state === 'ready'}
+        <p class="m-0">This tab is connected to your Magic Mirror connector. In claude.ai, add a custom connector with this address:</p>
+        <code class="block rounded bg-muted p-1.5 break-all text-foreground select-all">{$cloudUrl}/mcp</code>
+        <Button size="xs" variant="outline" class="justify-self-start" onclick={disconnectCloud}>Disconnect this tab</Button>
+      {:else}
+        <p class="m-0">Lets claude.ai on any device use this tab, through your own Cloudflare Worker (see <code class="text-foreground">cloud/README.md</code>).</p>
+        <input bind:value={phoneUrl} placeholder="https://magic-mirror.you.workers.dev" class="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-foreground" aria-label="Connector address" />
+        <input bind:value={phoneKey} type="password" placeholder="Your Magic Mirror key" class="h-7 rounded-md border border-input bg-transparent px-2 text-xs text-foreground" aria-label="Magic Mirror key" />
+        <Button size="xs" class="justify-self-start" disabled={!phoneUrl.trim() || !phoneKey.trim()} onclick={() => { connectCloud(app, phoneUrl, phoneKey); phoneKey = ''; }}>Connect</Button>
+        {#if $cloud.state === 'connecting'}<p class="m-0">Connecting…</p>{/if}
+        {#if $cloud.state === 'error'}<p class="m-0 text-red-400">{$cloud.message ?? "Couldn't connect."}</p>{/if}
+      {/if}
     </div>
   {/if}
 

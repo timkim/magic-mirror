@@ -1,0 +1,14 @@
+// Magic Mirror connector on Cloudflare: claude.ai (any device) → this Worker → your open
+// Magic Mirror tab. Setup: see README.md in this folder.
+{
+  "name": "magic-mirror",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // OAuth clients and tokens (hashed). Wrangler creates the namespace on first deploy.
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  // One relay per owner: holds the live connection to the Magic Mirror tab.
+  "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "Relay" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }],
+  "observability": { "enabled": true }
+}

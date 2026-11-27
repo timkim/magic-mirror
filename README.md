@@ -87,6 +87,8 @@ The same tools are an MCP server, so Claude desktop or Claude Code can drive the
 claude mcp add --transport http magic-mirror http://localhost:8080/mcp
 ```
 
+**From your phone (claude.ai anywhere):** deploy the small Cloudflare Worker in [`cloud/`](cloud/README.md) (free plan), pair the tab with the phone button in the Assistant panel, and add the Worker's `/mcp` address as a custom connector in claude.ai. Sign-in asks for your own key, and Magic Mirror only needs to be open on your PC.
+
 The bridge only accepts connections from the PC it runs on. Use `npm run farm -- --assistant-lan` to allow your network, and `--claude <path>` if `claude` isn't on the PATH. Tools are defined in `src/assistant/toolDefs.ts` and run in `src/assistant/tools.ts`.
 
 ## Magic Prism render farm (network rendering)
@@ -163,6 +165,7 @@ src/
   lib/        shadcn-svelte components and utils
 tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts,
               assistant.ts (MCP server and chat bridge, part of the coordinator)
+cloud/        Cloudflare Worker: the claude.ai connector (sign-in, MCP, relay to your tab)
 rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, settings, renderer, farm)
 test-scenes/  one small scene per feature being matched
 ```
@@ -194,7 +197,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
-- **Assistant:** a hosted MCP connector with sign-in (Cloudflare), so claude.ai on any device can drive Magic Mirror.
+- **Cloud:** farm status on the phone through the same Worker; then the public site (accounts, uploads, storage on R2).
 - **Editor:** resize, move and rotate models; layers; line and sphere brushes.
 - **Camera:** import and export MagicaVoxel-Animation-Script camera files; roll and focus keys.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.

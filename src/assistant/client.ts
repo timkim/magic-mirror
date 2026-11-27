@@ -68,7 +68,7 @@ function addPart(p: Part): () => void {
   return () => messages.update((ms) => [...ms]);
 }
 
-async function handleCall(app: App, call: { id: string; name: string; args: Record<string, unknown> }) {
+async function handleCall(app: App, call: { id: string; name: string; args: Record<string, unknown> }, reply: (out: ToolOutput) => Promise<void> | void) {
   const part: Part = { kind: 'tool', name: LABELS[call.name] ?? call.name, summary: short(call.name, call.args), status: 'running' };
   const refresh = addPart(part);
   let out: ToolOutput;
@@ -83,7 +83,7 @@ async function handleCall(app: App, call: { id: string; name: string; args: Reco
     part.summary = (e as Error).message;
   }
   refresh();
-  await api('/api/assistant/result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: call.id, ...out }) }).catch(() => {});
+  await reply(out);
 }
 
 /** Connect to the bridge and keep reconnecting (EventSource retries by itself). */
@@ -97,7 +97,12 @@ export function connect(app: App) {
       const { claude } = JSON.parse((e as MessageEvent).data);
       bridge.set(claude ? { state: 'ready', claude } : { state: 'no-claude' });
     });
-    es.addEventListener('call', (e) => void handleCall(app, JSON.parse((e as MessageEvent).data)));
+    es.addEventListener('call', (e) => {
+      const call = JSON.parse((e as MessageEvent).data);
+      void handleCall(app, call, (out) =>
+        api('/api/assistant/result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: call.id, ...out }) }).then(() => {}, () => {}),
+      );
+    });
     es.onerror = () => bridge.update((b) => (b.state === 'connecting' || b.state === 'offline' ? { state: 'offline' } : { state: 'connecting' }));
   };
   farmUrl.subscribe(() => open());
@@ -187,3 +192,67 @@ export function undoReply(app: App, m: Message) {
   m.undoTo = m.undoFrom;
   messages.update((ms) => [...ms]);
 }
+
+// ---- Phone access: the Cloudflare connector -------------------------------------------------
+// The tab keeps a WebSocket to your Magic Mirror Worker, which relays tool calls from claude.ai.
+
+const stored = (k: string) => { try { return localStorage.getItem(k) ?? ''; } catch { return ''; } };
+const store = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+
+export const cloudUrl = writable(stored('mm.cloud.url'));
+export const cloud = writable<{ state: 'off' | 'connecting' | 'ready' | 'error'; message?: string }>({ state: 'off' });
+let cloudSocket: WebSocket | null = null;
+let cloudRetry: ReturnType<typeof setTimeout> | null = null;
+const PART = 256 * 1024; // stay well under Cloudflare's WebSocket message limit
+
+/** Connect to the Worker (saving the address and key in this browser), or reconnect with saved ones. */
+export function connectCloud(app: App, url?: string, key?: string) {
+  if (url !== undefined) { store('mm.cloud.url', url.trim().replace(/\/+$/, '')); cloudUrl.set(url.trim().replace(/\/+$/, '')); }
+  if (key !== undefined) store('mm.cloud.key', key.trim());
+  const base = stored('mm.cloud.url'), secret = stored('mm.cloud.key');
+  if (cloudRetry) clearTimeout(cloudRetry);
+  cloudSocket?.close();
+  cloudSocket = null;
+  if (!base || !secret) return cloud.set({ state: 'off' });
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(base.replace(/^http/, 'ws') + '/tab');
+  } catch (e) {
+    return cloud.set({ state: 'error', message: (e as Error).message });
+  }
+  cloudSocket = ws;
+  cloud.set({ state: 'connecting' });
+  let wrongKey = false;
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', key: secret }));
+  ws.onmessage = (e) => {
+    const m = JSON.parse(String(e.data));
+    if (m.type === 'ready') cloud.set({ state: 'ready' });
+    else if (m.type === 'error') { wrongKey = true; cloud.set({ state: 'error', message: m.message }); }
+    else if (m.type === 'call')
+      void handleCall(app, m, (out) => {
+        const text = JSON.stringify(out);
+        const total = Math.max(1, Math.ceil(text.length / PART));
+        for (let part = 0; part < total; part++) ws.send(JSON.stringify({ type: 'result', id: m.id, part, total, data: text.slice(part * PART, (part + 1) * PART) }));
+      });
+  };
+  ws.onclose = () => {
+    if (cloudSocket !== ws) return;
+    cloudSocket = null;
+    if (wrongKey) return;
+    cloud.set({ state: 'connecting', message: 'Reconnecting…' });
+    cloudRetry = setTimeout(() => connectCloud(app), 5000);
+  };
+}
+
+export function disconnectCloud() {
+  store('mm.cloud.key', '');
+  if (cloudRetry) clearTimeout(cloudRetry);
+  const ws = cloudSocket;
+  cloudSocket = null;
+  ws?.close();
+  cloud.set({ state: 'off' });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && cloudSocket?.readyState === WebSocket.OPEN) cloudSocket.send(JSON.stringify({ type: 'focus' }));
+});
