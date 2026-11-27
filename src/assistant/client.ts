@@ -44,6 +44,8 @@ const short = (name: string, args: Record<string, unknown>) => {
     case 'set_palette': return `${(a.colors ?? []).length} colours`;
     case 'set_frame': return `frame ${a.frame}`;
     case 'set_object': return `object ${a.object_id}${a.move_by ? ` by ${a.move_by.join(', ')}` : ''}${a.rotate ? `, ${a.rotate * 90}°` : ''}${a.hidden !== undefined ? (a.hidden ? ', hidden' : ', shown') : ''}`;
+    case 'duplicate_object': return `object ${a.object_id}${a.offset ? ` → +${a.offset.join(', ')}` : ''}`;
+    case 'delete_object': return `object ${a.object_id}`;
     case 'resize_model': return `model ${a.model_id} → ${(a.size ?? []).join('×')}`;
     case 'set_layer': return `layer ${a.layer_id}${a.hidden !== undefined ? (a.hidden ? ' hidden' : ' shown') : ''}`;
     case 'set_camera_keyframes': return `${(a.keyframes ?? []).length} keys${a.end_frame !== undefined ? `, end ${a.end_frame}` : ''}`;
@@ -53,7 +55,7 @@ const short = (name: string, args: Record<string, unknown>) => {
 const LABELS: Record<string, string> = {
   get_scene: 'Looked at the scene', get_model: 'Read a model', set_voxels: 'Set voxels', draw_shapes: 'Drew', add_model: 'New model',
   move_object: 'Moved', set_object_animation: 'Animated', set_palette: 'Palette', set_material: 'Material', list_settings: 'Read settings',
-  set_settings: 'Settings', set_object: 'Object', resize_model: 'Resized', set_layer: 'Layer', set_camera_keyframes: 'Camera keys', set_frame: 'Frame', render_preview: 'Rendered a preview', undo: 'Undid', save_vox: 'Saved .vox', render_on_farm: 'Sent to the farm', farm_status: 'Checked the farm',
+  set_settings: 'Settings', set_object: 'Object', duplicate_object: 'Duplicated', delete_object: 'Deleted', resize_model: 'Resized', set_layer: 'Layer', set_camera_keyframes: 'Camera keys', set_frame: 'Frame', render_preview: 'Rendered a preview', undo: 'Undid', save_vox: 'Saved .vox', render_on_farm: 'Sent to the farm', farm_status: 'Checked the farm',
 };
 
 /** Add a part to the reply in progress (or start an "external" one for other Claude apps). */

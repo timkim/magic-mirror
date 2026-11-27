@@ -36,6 +36,17 @@
     if (mod && k === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
     if (mod && k === 'y') { e.preventDefault(); return redo(); }
     if (mod && k === 's') { e.preventDefault(); return app.saveVox(); }
+    // Clipboard and duplicate/delete act on the selected object or group.
+    const sel = $selected;
+    try {
+      if (mod && k === 'c' && sel !== null) { e.preventDefault(); return void ed.copy(sel); }
+      if (mod && k === 'v' && $scene) { e.preventDefault(); const t = app.settings.vec('cam.target'); return void ed.paste([t[0], t[1]]); }
+      if (mod && k === 'd' && sel !== null) { e.preventDefault(); return void ed.duplicate(sel); }
+      if ((k === 'delete' || k === 'backspace') && !mod && sel !== null && $enabled) { e.preventDefault(); return ed.deleteObject(sel); }
+    } catch (err) {
+      app.setStatus('msg', (err as Error).message);
+      return;
+    }
     if (mod || e.altKey || !$scene) return;
     if (k === 'tab') { e.preventDefault(); enabled.update((v) => !v); return; }
     if (!$enabled) return;

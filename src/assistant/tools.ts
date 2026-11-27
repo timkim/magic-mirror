@@ -48,6 +48,7 @@ function sceneSummary(app: App) {
       object_id: p.nodeId,
       name: p.name,
       layer: node?.kind === 'transform' ? node.layerId : undefined,
+      group: p.path && p.path.length > 2 ? p.path[p.path.length - 2] : undefined,
       model_id: p.modelId,
       size: file.models[p.modelId].size,
       voxels: file.models[p.modelId].voxels.length / 4,
@@ -70,6 +71,13 @@ function sceneSummary(app: App) {
     animation: { last_frame: app.animationEnd(), scene_keyframes_end: animationLength(file), current_frame: s.num('anim.frame'), fps: s.num('anim.fps') },
     camera_keyframes: getKeys(s),
     layers: [...file.layers.values()].map((l) => ({ id: l.id, name: l.attrs._name ?? null, hidden: l.hidden })),
+    groups: [...file.nodes.values()]
+      .filter((n) => n.kind === 'transform' && n.id !== 0 && file.nodes.get(n.childId)?.kind === 'group')
+      .slice(0, 200)
+      .map((n) => {
+        const g = file.nodes.get((n as { childId: number }).childId) as { childIds: number[] };
+        return { object_id: n.id, name: n.attrs._name ?? null, members: g.childIds, position: (n as { frames: { translation: number[] }[] }).frames[0].translation };
+      }),
     hidden_objects: [...file.nodes.values()].filter((n) => n.kind === 'transform' && n.attrs._hidden === '1').map((n) => ({ object_id: n.id, name: n.attrs._name ?? null })),
     objects,
     objects_listed: `${objects.length} of ${placed.length}`,
@@ -184,6 +192,20 @@ export async function runTool(app: App, name: string, a: Args): Promise<ToolOutp
         if (a.name !== undefined || a.hidden !== undefined || a.layer !== undefined) ed.setObject(id, { name: a.name, hidden: a.hidden, layer: a.layer });
       });
       return text('Done.');
+    }
+
+    case 'duplicate_object': {
+      need(app);
+      const id = ed.duplicate(a.object_id, a.offset);
+      app.history.squash(app.history.size - 1, label(`duplicate ${a.object_id}`));
+      return text({ object_id: id });
+    }
+
+    case 'delete_object': {
+      need(app);
+      ed.deleteObject(a.object_id);
+      app.history.squash(app.history.size - 1, label(`delete ${a.object_id}`));
+      return text('Deleted.');
     }
 
     case 'resize_model': {

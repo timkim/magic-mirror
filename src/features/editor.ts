@@ -9,12 +9,14 @@ import EditPanel from './ui/EditPanel.svelte';
 import PalettePanel from './ui/PalettePanel.svelte';
 import EditOverlay from './ui/EditOverlay.svelte';
 import LayersPanel from './ui/LayersPanel.svelte';
+import OutlinerPanel from './ui/OutlinerPanel.svelte';
 
 export const editorFeature: Feature = {
   id: 'editor',
   ui: [
     { slot: 'toolbar', component: EditToolbar, order: 5 },
     { slot: 'left', component: EditPanel, title: 'Edit', order: -10 },
+    { slot: 'left', component: OutlinerPanel, title: 'Outliner', order: -9.5 },
     { slot: 'left', component: LayersPanel, title: 'Layers', order: -9, collapsed: true },
     { slot: 'right', component: PalettePanel, title: 'Palette', order: -10 },
     { slot: 'stage', component: EditOverlay },

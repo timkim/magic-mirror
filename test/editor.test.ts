@@ -101,4 +101,41 @@ describe('VoxelEditor', () => {
     history.undo();
     expect(baker().placements.length).toBe(1);
   });
+
+  it('duplicates, deletes, copies and pastes across files with different palettes', () => {
+    const { file, history, editor, baker } = setup();
+    const node = baker().placements[0].nodeId!;
+    const count = baker().grid.voxelCount;
+    const dup = editor.duplicate(node);
+    expect(baker().placements.length).toBe(2);
+    expect(baker().grid.voxelCount).toBe(count * 2);
+    expect(file.models.length).toBe(2); // its own copy of the voxels
+    editor.setVoxels(baker().placements.find((p) => p.nodeId === dup)!.modelId, [[1, 1, 1, 9]]);
+    expect(baker().grid.voxelCount).toBe(count * 2 + 1); // the original is untouched
+    editor.deleteObject(node);
+    expect(baker().placements.length).toBe(1);
+    // Saving drops the now-unused model and renumbers.
+    const saved = parseVox(serializeVox(file));
+    expect(saved.models.length).toBe(1);
+    expect(buildVoxelGrid(saved).voxelCount).toBe(count + 1);
+    history.undo();
+    expect(baker().placements.length).toBe(2);
+
+    // Copy from this file, paste into another whose colour 3 is different.
+    file.palette.set([250, 10, 10, 255], 3 * 4); // a colour the other file doesn't have
+    const clip = editor.copy(node);
+    const other = setup();
+    other.file.palette.set([1, 2, 3, 255], 3 * 4);
+    const pasted = other.editor.paste([100, 100], clip)!;
+    const p = other.baker().placements.find((q) => q.nodeId === pasted)!;
+    const v = other.file.models[p.modelId].voxels;
+    const idx = v[3];
+    expect(idx).not.toBe(3); // moved to a slot that has the original colour
+    expect(Array.from(other.file.palette.subarray(idx * 4, idx * 4 + 4))).toEqual(Array.from(file.palette.subarray(12, 16)));
+    const b = other.baker().grid;
+    expect(b.origin[2]).toBe(other.baker().grid.origin[2]);
+    other.history.undo();
+    expect(other.baker().placements.length).toBe(1);
+    expect(Array.from(other.file.palette.subarray(idx * 4, idx * 4 + 4))).not.toEqual(Array.from(file.palette.subarray(12, 16)));
+  });
 });

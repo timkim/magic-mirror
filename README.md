@@ -58,6 +58,8 @@ Magic Mirror has a voxel editor modelled on MagicaVoxel's model mode. Turn on **
 | Move a model | **Move** (M): drag along the ground, Shift+drag up and down; arrow keys and PageUp/PageDown nudge (Shift: 10) |
 | Turn, resize, rename, hide, change layer | The model's box in the Edit panel; R / Shift+R turn 90°. Resizing keeps voxels where they are in the world |
 | Layers | The **Layers** panel: show or hide each of the 16 layers, rename them, bring hidden objects back |
+| Find and pick objects | The **Outliner**: the scene's groups and objects; click to select (a group moves and turns as one), double-click to frame it, filter by name |
+| Copy, paste, duplicate, delete | Ctrl+C / Ctrl+V (pastes at the camera target, even into another file, keeping colours), Ctrl+D, Delete |
 | Mirror | X, Y, Z buttons or keys, across the model's centre |
 | Edit another model | Ctrl+click it; Esc to stop editing |
 | Pick a colour from the scene | Alt+click |
@@ -67,7 +69,7 @@ Magic Mirror has a voxel editor modelled on MagicaVoxel's model mode. Turn on **
 
 The **Palette** panel edits colours and materials (diffuse, metal, glass, emit, blend, media). **New** starts an empty scene, and **Add** in the Edit panel puts a new empty model at the camera target. Saving keeps everything Magic Mirror doesn't edit: an untouched file comes back byte for byte, and edited files are sent to the render farm automatically.
 
-Every change goes through one undo history, and the same calls the tools use are there for scripts (and the coming assistant): `app.editor.setVoxels(modelId, [[x, y, z, colour], …])`, `setColor`, `setMaterial`, `addModel`, `moveObject`, `rotateObject`, `resizeModel`, `setObject` and `setLayer`.
+Every change goes through one undo history, and the same calls the tools use are there for scripts (and the coming assistant): `app.editor.setVoxels(modelId, [[x, y, z, colour], …])`, `setColor`, `setMaterial`, `addModel`, `moveObject`, `rotateObject`, `resizeModel`, `setObject`, `setLayer`, `duplicate`, `deleteObject`, `copy` and `paste`.
 
 ## Camera keyframes
 
@@ -203,7 +205,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 ## Roadmap
 
 - **Cloud:** the public site (accounts, uploads, storage on R2); finished videos viewable from the phone.
-- **Editor:** a scene outliner (groups and objects), copy and paste models, pattern brush.
+- **Editor:** multi-select and grouping, drag-and-drop in the outliner, pattern brush.
 - **Camera:** import and export MagicaVoxel-Animation-Script camera files; roll and focus keys.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
 - **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.

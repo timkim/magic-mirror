@@ -16,7 +16,7 @@ export const ASSISTANT_GUIDE = `You are working inside Magic Mirror, a MagicaVox
 
 - Coordinates are integers and Z is up. A scene has models (voxel volumes, each up to 256 per axis) placed by objects (transforms). Several objects can share one model.
 - Voxel edits use the model's own coordinates: 0..size-1 on each axis. Colours are palette indices 1-255; colour 0 erases.
-- Start with get_scene. Use set_object to move, turn, hide or re-layer objects and resize_model to give a model more room. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
+- Start with get_scene (objects list their group; groups list their members). Use duplicate_object to repeat things (rows of houses, trees) instead of drawing them again. Use set_object to move, turn, hide or re-layer objects and resize_model to give a model more room. Use draw_shapes for anything bigger than a few voxels. Use set_voxels for detail.
 - To build something new, add_model with a size that fits it, then draw into it. Put its bottom on the ground: position z = size z / 2 plus the ground height that get_scene reports.
 - Pick colours from the palette that get_scene describes, or set new ones in unused slots with set_palette (never recolour a slot the scene already uses unless asked).
 - Animation: objects move between keyframes with set_object_animation (MagicaVoxel interpolates position linearly). The camera animates with set_camera_keyframes (orbits, push-ins, crane moves); get_scene shows the keys and the timeline end. The sun, sky and render settings are settings (list_settings, set_settings); set_frame shows a frame. To check a camera move, preview a few frames (set_frame, then render_preview).
@@ -95,12 +95,22 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'set_object',
-    description: 'Change an object: move_by [dx,dy,dz] (keeps its keyframes, shifting them all), rotate (quarter turns about Z, positive = counter-clockwise from above, in place), name, hidden, layer (0-15).',
+    description: 'Change an object or a whole group: move_by [dx,dy,dz] (keeps its keyframes, shifting them all), rotate (quarter turns about Z, positive = counter-clockwise from above, in place), name, hidden, layer (0-15).',
     inputSchema: {
       type: 'object',
       properties: { object_id: int('Object id'), move_by: vec3('Voxels to move by'), rotate: { type: 'integer' }, name: { type: 'string' }, hidden: { type: 'boolean' }, layer: { type: 'integer' } },
       required: ['object_id'],
     },
+  },
+  {
+    name: 'duplicate_object',
+    description: 'Copy an object or group (with its own copy of the voxels). offset [dx,dy,dz] places the copy; default is just beside the original. Returns the new object_id.',
+    inputSchema: { type: 'object', properties: { object_id: int('Object or group id'), offset: vec3('Where the copy goes, relative to the original') }, required: ['object_id'] },
+  },
+  {
+    name: 'delete_object',
+    description: 'Remove an object or group from the scene.',
+    inputSchema: { type: 'object', properties: { object_id: int('Object or group id') }, required: ['object_id'] },
   },
   {
     name: 'resize_model',

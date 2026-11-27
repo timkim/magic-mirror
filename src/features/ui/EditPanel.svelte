@@ -29,13 +29,18 @@
     void $scene;
     void $history;
     const id = $selected;
-    if (id === null) return null;
+    if (id === null || !app.file) return null;
+    const node = app.file.nodes.get(id);
+    if (node?.kind !== 'transform') return null;
+    const layer = node.layerId;
+    const animated = node.frames.some((f) => f.frame !== undefined);
     const p = app.editor.selectedPlacement();
-    if (!p || !app.file || p.nodeId === undefined) return null;
-    const node = app.file.nodes.get(p.nodeId);
-    const layer = node?.kind === 'transform' ? node.layerId : 0;
-    const animated = node?.kind === 'transform' && node.frames.some((f) => f.frame !== undefined);
-    return { name: p.name ?? '', label: p.name ?? `model ${p.modelId}`, size: [...app.file.models[p.modelId].size], id: p.modelId, nodeId: p.nodeId, pos: [...p.translation], layer, animated };
+    if (!p) {
+      // A group: moved, turned, hidden and renamed as a whole.
+      const name = node.attrs._name ?? '';
+      return { group: true, name, label: name || `group ${id}`, size: [0, 0, 0], id: -1, nodeId: id, pos: [...node.frames[0].translation], layer, animated };
+    }
+    return { group: false, name: node.attrs._name ?? '', label: p.name ?? `model ${p.modelId}`, size: [...app.file.models[p.modelId].size], id: p.modelId, nodeId: id, pos: [...p.translation], layer, animated };
   });
   let layers = $derived.by(() => {
     void $scene;
@@ -117,7 +122,7 @@
           <Button size="icon-xs" variant="ghost" title="Hide this object" aria-label="Hide object" onclick={() => { ed.setObject(current!.nodeId, { hidden: true }, `Hide ${current!.label}`); selected.set(null); }}><EyeOffIcon /></Button>
           <Button size="xs" variant="ghost" onclick={() => selected.set(null)} title="Stop editing this model (Esc)">Done</Button>
         </div>
-        <span class="text-muted-foreground">model {current.id}{current.animated ? ' · animated: moving shifts every keyframe' : ''}</span>
+        <span class="text-muted-foreground">{current.group ? 'group: edits apply to everything in it' : `model ${current.id}`}{current.animated ? ' · animated: moving shifts every keyframe' : ''}</span>
         <div class="grid min-w-0 grid-cols-[52px_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5">
           <span class="text-muted-foreground">Position</span>
           <div class="flex gap-1">
@@ -130,6 +135,7 @@
             <Button size="xs" variant="outline" title="Turn 90° counter-clockwise (Shift+R)" onclick={() => ed.rotateObject(current!.nodeId, 1, `Rotate ${current!.label}`)}><RotateCcwIcon />90°</Button>
             <Button size="xs" variant="outline" title="Turn 90° clockwise (R)" onclick={() => ed.rotateObject(current!.nodeId, -1, `Rotate ${current!.label}`)}><RotateCwIcon />90°</Button>
           </div>
+          {#if !current.group}
           <span class="text-muted-foreground">Size</span>
           <div class="flex gap-1">
             {#each [0, 1, 2] as i (i)}
@@ -145,6 +151,7 @@
             </NativeSelect.Root>
             <Button size="xs" variant="outline" disabled={newSize.every((v, i) => v === current!.size[i])} onclick={resize}>Resize</Button>
           </div>
+          {/if}
           <span class="text-muted-foreground">Layer</span>
           <NativeSelect.Root size="sm" class="min-w-0" value={String(current.layer)} aria-label="Layer" onchange={(e: Event & { currentTarget: HTMLSelectElement }) => ed.setObject(current!.nodeId, { layer: Number(e.currentTarget.value) }, 'Move to layer')}>
             {#each layers as l (l.id)}<NativeSelect.Option value={String(l.id)}>{l.attrs._name || `Layer ${l.id}`}</NativeSelect.Option>{/each}
@@ -153,7 +160,7 @@
       {:else}
         <span class="text-muted-foreground">{$enabled ? 'Click a model to edit it.' : 'Turn on Edit (Tab), then click a model.'}</span>
       {/if}
-      <span class="text-muted-foreground">Ctrl+click: another model · Alt+click: pick colour · right-drag: orbit</span>
+      <span class="text-muted-foreground">Ctrl+click: another model · Alt+click: pick colour · right-drag: orbit · Ctrl+C/V/D, Delete</span>
     </div>
 
     <div class="grid gap-1.5">

@@ -11,6 +11,8 @@ export interface PlacedModel {
   name?: string;
   /** The transform node directly above the shape (what moving or animating this object edits). */
   nodeId?: number;
+  /** Every transform node from the root down to this object (for selecting whole groups). */
+  path?: number[];
 }
 
 /** The baked scene: a sparse grid of palette indices (see grid.ts). */
@@ -74,7 +76,7 @@ export function placeModels(file: VoxFile, time = 0): PlacedModel[] {
     file.models.forEach((_, i) => out.push({ modelId: i, rotation: IDENTITY_ROT, translation: [0, 0, 0] }));
     return out;
   }
-  const visit = (id: number, rot: Rot3, tr: [number, number, number], name: string | undefined, depth: number, nodeId?: number) => {
+  const visit = (id: number, rot: Rot3, tr: [number, number, number], name: string | undefined, depth: number, nodeId?: number, path: number[] = []) => {
     const node = file.nodes.get(id);
     if (!node || depth > 256) return;
     if (node.attrs._hidden === '1') return;
@@ -82,12 +84,12 @@ export function placeModels(file: VoxFile, time = 0): PlacedModel[] {
       if (file.layers.get(node.layerId)?.hidden) return;
       const p = poseAt(node, time);
       const t = applyRot(rot, p.translation);
-      visit(node.childId, mulRot(rot, p.rotation), [tr[0] + t[0], tr[1] + t[1], tr[2] + t[2]], node.attrs._name ?? name, depth + 1, node.id);
+      visit(node.childId, mulRot(rot, p.rotation), [tr[0] + t[0], tr[1] + t[1], tr[2] + t[2]], node.attrs._name ?? name, depth + 1, node.id, [...path, node.id]);
     } else if (node.kind === 'group') {
-      for (const c of node.childIds) visit(c, rot, tr, name, depth + 1);
+      for (const c of node.childIds) visit(c, rot, tr, name, depth + 1, nodeId, path);
     } else {
       const modelId = shapeModelAt(node, time);
-      if (modelId !== undefined && file.models[modelId]) out.push({ modelId, rotation: rot, translation: tr, name, nodeId });
+      if (modelId !== undefined && file.models[modelId]) out.push({ modelId, rotation: rot, translation: tr, name, nodeId, path });
     }
   };
   visit(0, IDENTITY_ROT, [0, 0, 0], undefined, 0);

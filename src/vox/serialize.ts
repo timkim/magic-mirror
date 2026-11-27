@@ -98,7 +98,14 @@ function depthFirst(file: VoxFile): SceneNode[] {
 
 export function serializeVox(file: VoxFile): Uint8Array {
   const body = new Out();
-  for (const m of file.models) {
+  const nodes = depthFirst(file);
+  // Models no shape uses any more (deleted objects) are dropped and the rest renumbered;
+  // when every model is used, ids and bytes stay exactly as they were.
+  const usedModels = new Set<number>();
+  for (const n of nodes) if (n.kind === 'shape') for (const m of n.models) usedModels.add(m.modelId);
+  const keep = file.models.map((_, i) => i).filter((i) => usedModels.has(i) || nodes.length === 0);
+  const modelId = new Map(keep.map((old, i) => [old, i]));
+  for (const m of keep.map((i) => file.models[i])) {
     body.chunk('SIZE', (o) => m.size.forEach((v) => o.int32(v)));
     body.chunk('XYZI', (o) => {
       o.int32(m.voxels.length / 4);
@@ -106,7 +113,6 @@ export function serializeVox(file: VoxFile): Uint8Array {
     });
   }
 
-  const nodes = depthFirst(file);
   const newId = new Map(nodes.map((n, i) => [n.id, i]));
   for (const n of nodes) {
     const id = newId.get(n.id)!;
@@ -138,7 +144,7 @@ export function serializeVox(file: VoxFile): Uint8Array {
           const d: VoxDict = { ...(m.attrs ?? {}) };
           if (m.frame !== undefined) d._f = String(m.frame);
           else delete d._f;
-          o.int32(m.modelId);
+          o.int32(modelId.get(m.modelId) ?? 0);
           o.dict(m.attrs && (m.attrs._f === undefined ? m.frame === undefined : Number(m.attrs._f) === m.frame) ? m.attrs : d);
         }
       });

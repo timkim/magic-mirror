@@ -7,7 +7,8 @@
 import { get, writable } from 'svelte/store';
 import { IDENTITY_ROT } from '../vox/parser';
 import { placementBounds, worldToModel, type PlacedModel } from '../vox/scene';
-import type { GroupNode, Rot3, TransformFrame, TransformNode, VoxDict, VoxFile } from '../vox/types';
+import type { GroupNode, Rot3, SceneNode, TransformFrame, TransformNode, VoxDict, VoxFile, VoxModel } from '../vox/types';
+import { Clipboard, type Clip } from './clipboard';
 import { shapeCells } from './shapes';
 import type { Command, History } from './history';
 import { cameraRay, castRay, planeCell, type GridHit } from './pick';
@@ -26,6 +27,12 @@ function mulRot(a: Rot3, b: Rot3): Rot3 {
   return o;
 }
 const applyRot = (r: Rot3, v: number[]): V3 => [0, 1, 2].map((i) => r[i * 3] * v[0] + r[i * 3 + 1] * v[1] + r[i * 3 + 2] * v[2]) as V3;
+const toBase64 = (b: Uint8Array) => {
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+
 /** A quarter turn about Z (counter-clockwise seen from above). */
 const ROT_Z90: Rot3 = [0, -1, 0, 1, 0, 0, 0, 0, 1];
 type V3 = [number, number, number];
@@ -91,11 +98,19 @@ export class VoxelEditor {
     return id === null ? null : (this.host.placements().find((p) => p.nodeId === id) ?? null);
   }
 
+  /** Every placed model under the selected object or group. */
+  selectionPlacements(): PlacedModel[] {
+    const id = get(this.selected);
+    if (id === null) return [];
+    return this.host.placements().filter((p) => p.nodeId === id || p.path?.includes(id));
+  }
+
   /** Select an object (by transform node id) and say so in the status bar. */
   select(nodeId: number | null) {
     this.selected.set(nodeId);
-    const p = this.selectedPlacement();
-    if (p) this.host.setStatus('msg', `Editing ${p.name ?? `model ${p.modelId}`}`);
+    const node = nodeId === null ? undefined : this.host.file?.nodes.get(nodeId);
+    if (node) this.host.setStatus('msg', `Selected ${node.attrs._name ?? (this.selectedPlacement() ? `model ${this.selectedPlacement()!.modelId}` : `group ${nodeId}`)}`);
+    this.preview.set({ boxes: this.modelBox() });
   }
 
   // ---- Scripting / assistant API -------------------------------------------------------
@@ -282,6 +297,224 @@ export class VoxelEditor {
     this.history.run({ label, apply: () => set(after), revert: () => set(existed ? before : null) });
   }
 
+  /** The group directly holding a node, if any. */
+  parentGroup(nodeId: number): GroupNode | null {
+    for (const n of this.host.file!.nodes.values()) if (n.kind === 'group' && n.childIds.includes(nodeId)) return n;
+    return null;
+  }
+
+  /** The scene's top group (under root transform 0). */
+  private rootGroup(): GroupNode {
+    const file = this.host.file!;
+    const root = file.nodes.get(0);
+    const g = root?.kind === 'transform' ? file.nodes.get(root.childId) : undefined;
+    if (g?.kind !== 'group') throw new Error('This file has no scene group.');
+    return g;
+  }
+
+  /** A transform and everything below it, in depth-first order. */
+  subtree(nodeId: number): SceneNode[] {
+    const file = this.host.file!;
+    const out: SceneNode[] = [];
+    const visit = (id: number) => {
+      const n = file.nodes.get(id);
+      if (!n || out.includes(n)) return;
+      out.push(n);
+      if (n.kind === 'transform') visit(n.childId);
+      else if (n.kind === 'group') n.childIds.forEach(visit);
+    };
+    visit(nodeId);
+    return out;
+  }
+
+  /**
+   * Add copies of `nodes` (a subtree whose first node is a transform) with fresh node ids and
+   * copies of their models, under `parent`. Returns the new root's id. Not undoable on its own.
+   */
+  private insertCopy(nodes: SceneNode[], models: Map<number, VoxModel>, parent: GroupNode, place: (f: TransformFrame[]) => TransformFrame[]): { root: number; nodeIds: number[]; modelIds: number[] } {
+    const file = this.host.file!;
+    let next = Math.max(-1, ...file.nodes.keys()) + 1;
+    const ids = new Map(nodes.map((n) => [n.id, next++]));
+    const modelIds = new Map<number, number>();
+    for (const [old, m] of models) {
+      modelIds.set(old, file.models.length);
+      file.models.push({ size: [...m.size] as V3, voxels: m.voxels.slice() });
+    }
+    nodes.forEach((n, i) => {
+      const id = ids.get(n.id)!;
+      if (n.kind === 'transform') {
+        const frames = n.frames.map((f) => ({ ...f, attrs: undefined }));
+        file.nodes.set(id, { ...n, id, attrs: { ...n.attrs }, childId: ids.get(n.childId) ?? -1, frames: i === 0 ? place(frames) : frames });
+      } else if (n.kind === 'group') {
+        file.nodes.set(id, { ...n, id, attrs: { ...n.attrs }, childIds: n.childIds.map((c) => ids.get(c)!).filter((c) => c !== undefined) });
+      } else {
+        file.nodes.set(id, { ...n, id, attrs: { ...n.attrs }, models: n.models.map((m) => ({ ...m, attrs: undefined, modelId: modelIds.get(m.modelId) ?? m.modelId })) });
+      }
+    });
+    const root = ids.get(nodes[0].id)!;
+    parent.childIds.push(root);
+    return { root, nodeIds: [...ids.values()], modelIds: [...modelIds.values()] };
+  }
+
+  /** Undo for insertCopy: remove the nodes, and the models if they're still the last ones. */
+  private removeCopy(parent: GroupNode, made: { root: number; nodeIds: number[]; modelIds: number[] }) {
+    const file = this.host.file!;
+    parent.childIds = parent.childIds.filter((c) => c !== made.root);
+    for (const id of made.nodeIds) file.nodes.delete(id);
+    if (made.modelIds.length && made.modelIds.at(-1) === file.models.length - 1) file.models.length = made.modelIds[0];
+  }
+
+  private modelsOf(nodes: SceneNode[]) {
+    const file = this.host.file!;
+    const models = new Map<number, VoxModel>();
+    for (const n of nodes) if (n.kind === 'shape') for (const m of n.models) if (file.models[m.modelId]) models.set(m.modelId, file.models[m.modelId]);
+    return models;
+  }
+
+  /** Duplicate an object or group next to the original (its own copy of the voxels). */
+  duplicate(nodeId: number, offset?: V3): number {
+    const nodes = this.subtree(nodeId);
+    if (nodes[0]?.kind !== 'transform') throw new Error(`No object with id ${nodeId}`);
+    const parent = this.parentGroup(nodeId);
+    if (!parent) throw new Error("The scene's root can't be duplicated.");
+    // Default: beside the original, past its width.
+    const before = this.selectionPlacementsOf(nodeId);
+    let off = offset;
+    if (!off) {
+      const b = before.map((p) => placementBounds(this.host.file!, p));
+      const w = b.length ? Math.max(...b.map((x) => x.hi[0])) - Math.min(...b.map((x) => x.lo[0])) + 1 : 8;
+      off = [w + 2, 0, 0];
+    }
+    const o = off;
+    let made: ReturnType<VoxelEditor['insertCopy']> | null = null;
+    this.history.run({
+      label: `Duplicate ${nodes[0].attrs._name ?? 'object'}`,
+      apply: () => {
+        made = this.insertCopy(nodes, this.modelsOf(nodes), parent, (fr) => fr.map((f) => ({ ...f, translation: f.translation.map((v, i) => v + o[i]) as V3 })));
+        this.host.structureChanged();
+        this.select(made.root);
+      },
+      revert: () => {
+        if (made) this.removeCopy(parent, made);
+        this.selected.set(nodeId);
+        this.host.structureChanged();
+      },
+    });
+    return made!.root;
+  }
+
+  private selectionPlacementsOf(nodeId: number) {
+    return this.host.placements().filter((p) => p.nodeId === nodeId || p.path?.includes(nodeId));
+  }
+
+  /** Remove an object or group from the scene (its models stay until the file is saved). */
+  deleteObject(nodeId: number) {
+    const parent = this.parentGroup(nodeId);
+    if (!parent || nodeId === 0) throw new Error("The scene's root can't be deleted.");
+    const name = this.host.file!.nodes.get(nodeId)?.attrs._name ?? 'object';
+    const at = parent.childIds.indexOf(nodeId);
+    this.history.run({
+      label: `Delete ${name}`,
+      apply: () => {
+        parent.childIds = parent.childIds.filter((c) => c !== nodeId);
+        if (get(this.selected) === nodeId) this.selected.set(null);
+        this.host.structureChanged();
+      },
+      revert: () => {
+        parent.childIds.splice(at, 0, nodeId);
+        this.host.structureChanged();
+      },
+    });
+  }
+
+  /** Copy an object or group to the clipboard (kept in this browser, so it pastes into other files too). */
+  copy(nodeId: number): Clip {
+    const file = this.host.file!;
+    const nodes = this.subtree(nodeId);
+    if (nodes[0]?.kind !== 'transform') throw new Error(`No object with id ${nodeId}`);
+    const models = this.modelsOf(nodes);
+    const used = new Set<number>();
+    for (const m of models.values()) for (let i = 3; i < m.voxels.length; i += 4) used.add(m.voxels[i]);
+    const b = this.selectionPlacementsOf(nodeId).map((p) => placementBounds(file, p));
+    const clip: Clip = {
+      kind: 'magic-mirror-clip',
+      name: nodes[0].attrs._name ?? 'object',
+      nodes: nodes.map((n) => (n.kind === 'transform' ? { ...n, frames: n.frames.map((f) => ({ ...f, attrs: undefined })) } : n.kind === 'shape' ? { ...n, models: n.models.map((m) => ({ ...m, attrs: undefined })) } : n)),
+      models: [...models].map(([id, m]) => ({ id, size: m.size, voxels: toBase64(m.voxels) })),
+      colors: [...used].map((i) => ({ index: i, rgba: Array.from(file.palette.subarray(i * 4, i * 4 + 4)), material: file.materials.get(i) })),
+      bottom: b.length ? Math.min(...b.map((x) => x.lo[2])) : 0,
+      center: b.length ? ([0, 1].map((i) => Math.round((Math.min(...b.map((x) => x.lo[i])) + Math.max(...b.map((x) => x.hi[i]))) / 2)) as [number, number]) : [0, 0],
+      extent: b.length ? ([0, 1].map((i) => Math.max(...b.map((x) => x.hi[i])) - Math.min(...b.map((x) => x.lo[i])) + 1) as [number, number]) : [8, 8],
+    };
+    Clipboard.save(clip);
+    this.host.setStatus('msg', `Copied ${clip.name}`);
+    return clip;
+  }
+
+  /**
+   * Paste the clipboard into the top group, centred at (x, y) with its bottom on the ground.
+   * Colours keep their look: an index whose colour differs here is mapped to a matching or free
+   * palette slot (taking its material along).
+   */
+  paste(at: [number, number], clip = Clipboard.load()): number | null {
+    if (!clip) return null;
+    const file = this.host.file!;
+    const parent = this.rootGroup();
+    // Colour mapping.
+    const same = (i: number, rgba: number[]) => rgba.every((v, k) => file.palette[i * 4 + k] === v);
+    const usedHere = new Set<number>();
+    for (const m of file.models) for (let i = 3; i < m.voxels.length; i += 4) usedHere.add(m.voxels[i]);
+    const remap = new Map<number, number>();
+    const newColors: { index: number; rgba: number[]; material?: VoxDict }[] = [];
+    for (const c of clip.colors) {
+      if (same(c.index, c.rgba)) continue;
+      let to = -1;
+      for (let i = 1; i < 256 && to < 0; i++) if (same(i, c.rgba)) to = i;
+      if (to < 0) for (let i = 1; i < 256 && to < 0; i++) if (!usedHere.has(i) && !newColors.some((n) => n.index === i) && !clip.colors.some((k) => k.index === i && !same(i, k.rgba) && i !== c.index)) to = i;
+      if (to < 0) to = c.index; // palette full: keep the index
+      if (to !== c.index) remap.set(c.index, to);
+      if (!same(to, c.rgba)) newColors.push({ index: to, rgba: c.rgba, material: c.material });
+      usedHere.add(to);
+    }
+    const models = new Map<number, VoxModel>();
+    for (const m of clip.models) {
+      const v = Uint8Array.from(atob(m.voxels), (ch) => ch.charCodeAt(0));
+      for (let i = 3; i < v.length; i += 4) v[i] = remap.get(v[i]) ?? v[i];
+      models.set(m.id, { size: m.size as V3, voxels: v });
+    }
+    const ground = this.host.grid?.origin[2] ?? 0;
+    // Pasting where it came from would hide it inside the original: put it alongside instead.
+    if (Math.abs(at[0] - clip.center[0]) < 2 && Math.abs(at[1] - clip.center[1]) < 2) at = [at[0] + (clip.extent?.[0] ?? 8) + 2, at[1]];
+    const shift: V3 = [Math.round(at[0]) - clip.center[0], Math.round(at[1]) - clip.center[1], ground - clip.bottom];
+    const oldColors = newColors.map((c) => ({ index: c.index, rgba: Array.from(file.palette.subarray(c.index * 4, c.index * 4 + 4)), material: file.materials.get(c.index) }));
+    const setColors = (list: typeof newColors) => {
+      for (const c of list) {
+        file.palette.set(c.rgba, c.index * 4);
+        if (c.material) file.materials.set(c.index, c.material);
+        else file.materials.delete(c.index);
+      }
+      if (list.length) this.host.materialsChanged();
+    };
+    let made: ReturnType<VoxelEditor['insertCopy']> | null = null;
+    this.history.run({
+      label: `Paste ${clip.name}`,
+      apply: () => {
+        setColors(newColors);
+        made = this.insertCopy(clip.nodes as SceneNode[], models, parent, (fr) => fr.map((f) => ({ ...f, translation: f.translation.map((v, i) => v + shift[i]) as V3 })));
+        this.host.structureChanged();
+        this.select(made.root);
+      },
+      revert: () => {
+        if (made) this.removeCopy(parent, made);
+        setColors(oldColors);
+        this.selected.set(null);
+        this.host.structureChanged();
+      },
+    });
+    if (remap.size) this.host.setStatus('msg', `Pasted ${clip.name}; ${remap.size} colour${remap.size > 1 ? 's' : ''} moved to free palette slots`);
+    return made!.root;
+  }
+
   /** Run several edits as one undo step. */
   group(label: string, fn: () => void) {
     const start = this.history.size;
@@ -427,9 +660,11 @@ export class VoxelEditor {
       return true;
     }
     if (mode === 'move') {
-      if (owner?.nodeId !== undefined && owner.nodeId !== get(this.selected)) this.select(owner.nodeId);
-      const p = this.selectedPlacement();
-      if (!p || p.nodeId === undefined) return true;
+      // Clicking part of the selected group keeps the group; anything else selects that object.
+      const sel = get(this.selected);
+      if (owner?.nodeId !== undefined && owner.nodeId !== sel && !(sel !== null && owner.path?.includes(sel))) this.select(owner.nodeId);
+      const nodeId = get(this.selected);
+      if (nodeId === null || !this.selectionPlacements().length) return true;
       // Drag on the horizontal plane through the clicked point; with Shift, up and down.
       const t = hit ? hit.t : 0;
       const at = [0, 1, 2].map((i) => r.origin[i] + r.dir[i] * t) as V3;
@@ -440,7 +675,7 @@ export class VoxelEditor {
         plane = at[axis];
       }
       const from = planeCell(r.origin, r.dir, axis, plane);
-      if (from) this.moving = { nodeId: p.nodeId, axis, plane, from, delta: [0, 0, 0] };
+      if (from) this.moving = { nodeId, axis, plane, from, delta: [0, 0, 0] };
       return true;
     }
     const p = this.selectedPlacement();
@@ -498,7 +733,7 @@ export class VoxelEditor {
     if (this.moving) {
       const m = this.moving;
       this.moving = null;
-      if (m.delta.some((d) => d !== 0)) this.moveObject(m.nodeId, m.delta, `Move ${this.selectedPlacement()?.name ?? 'object'} by ${m.delta.join(', ')}`);
+      if (m.delta.some((d) => d !== 0)) this.moveObject(m.nodeId, m.delta, `Move ${this.host.file?.nodes.get(m.nodeId)?.attrs._name ?? 'object'} by ${m.delta.join(', ')}`);
       this.preview.set({ boxes: this.modelBox() });
       return;
     }
@@ -517,10 +752,10 @@ export class VoxelEditor {
   }
 
   private modelBox(): Preview['boxes'] {
-    const p = this.selectedPlacement();
-    if (!p || !this.host.file) return [];
-    const b = placementBounds(this.host.file, p);
-    return [{ min: b.lo as V3, max: b.hi as V3, kind: 'model' }];
+    const ps = this.selectionPlacements();
+    if (!ps.length || !this.host.file) return [];
+    const bs = ps.map((p) => placementBounds(this.host.file!, p));
+    return [{ min: [0, 1, 2].map((i) => Math.min(...bs.map((b) => b.lo[i]))) as V3, max: [0, 1, 2].map((i) => Math.max(...bs.map((b) => b.hi[i]))) as V3, kind: 'model' }];
   }
 
   hover(u: number, v: number, aspect: number) {
@@ -538,7 +773,7 @@ export class VoxelEditor {
         }
       } else if (get(this.mode) === 'move') {
         const owner = hit.ground ? null : this.ownerOf(hit.cell);
-        if (owner && owner.nodeId !== p.nodeId) {
+        if (owner && owner.nodeId !== p.nodeId && !owner.path?.includes(get(this.selected)!)) {
           const b = placementBounds(this.host.file!, owner);
           boxes.push({ min: b.lo as V3, max: b.hi as V3, kind: 'target' });
         }
