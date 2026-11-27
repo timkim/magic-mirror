@@ -3,15 +3,38 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["@webgpu/types", "vite/client", "node"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "@webgpu/types",
+      "vite/client",
+      "node",
+      "svelte"
+    ],
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
-    "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "$lib": [
+        "./src/lib"
+      ],
+      "$lib/*": [
+        "./src/lib/*"
+      ]
+    },
+    "verbatimModuleSyntax": true
   },
-  "include": ["src", "tools", "test"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "tools",
+    "test"
+  ]
 }
