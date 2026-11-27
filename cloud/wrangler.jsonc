@@ -5,10 +5,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-  // OAuth clients and tokens (hashed). Wrangler creates the namespace on first deploy.
+  // OAuth clients and tokens (hashed). `npm run deploy` finds or creates the namespace
+  // ("magic-mirror-oauth") and fills in its id, so this file needs no account-specific ids.
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
   // One relay per owner: holds the live connection to the Magic Mirror tab.
   "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "Relay" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // The Magic Mirror app itself (built by `npm run build` in the repo root) is served from here,
+  // so one address has the app at /, the farm page at /farm and the connector at /mcp. Static
+  // files are served straight from Cloudflare's edge; only these paths run the Worker.
+  "assets": {
+    "directory": "../dist",
+    "run_worker_first": ["/mcp", "/mcp/*", "/authorize", "/oauth/*", "/.well-known/*", "/farm", "/farm/*", "/tab", "/status"]
+  }
 }

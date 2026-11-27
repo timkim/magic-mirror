@@ -15,12 +15,31 @@ over a limit, requests fail until the daily reset rather than costing money).
 You need a free Cloudflare account. From this folder on your PC:
 
 ```sh
+npm run build                           # in the repo root: the app the Worker serves
+cd cloud
 npm install
 npx wrangler login                      # opens Cloudflare in the browser
-npx wrangler deploy                     # prints your address, e.g. https://magic-mirror.<you>.workers.dev
+npm run deploy                          # prints your address, e.g. https://magic-mirror.<you>.workers.dev
 node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"   # makes a key
 npx wrangler secret put OWNER_KEY       # paste that key
 ```
+
+The address serves Magic Mirror itself at `/`, the farm page at `/farm`, the connector at `/mcp`
+and a status page at `/status`.
+
+### Deploying on every push
+
+After the first deploy, GitHub can deploy for you: every push to `main` that passes the checks
+goes live within a few minutes. In the GitHub repo, open Settings → Secrets and variables →
+Actions and add:
+
+- `CLOUDFLARE_ACCOUNT_ID`: from the Cloudflare dashboard (Workers & Pages, right-hand side).
+- `CLOUDFLARE_API_TOKEN`: create one under My Profile → API Tokens → Create Token, using the
+  "Edit Cloudflare Workers" template.
+
+Your `OWNER_KEY` secret stays on Cloudflare; deploys don't touch it. Work on another branch
+and merge to `main` when it's ready. (Cloudflare's per-branch preview addresses aren't
+available for Workers that use Durable Objects, which the relay does.)
 
 Keep the key somewhere safe (a password manager). It's what lets Claude in and pairs your tabs.
 
@@ -29,11 +48,12 @@ Then:
 1. **Pair Magic Mirror:** in the Assistant panel, press the phone button, enter the Worker
    address and the key, and press Connect. The browser remembers it.
 2. **Add the connector in claude.ai:** Settings → Connectors → Add custom connector, with the
-   address `https://magic-mirror.<you>.workers.dev/mcp`. Claude opens a sign-in page: enter your
+   address `https://magic-mirror.<you>.workers.dev/mcp`. (Open Magic Mirror from the Worker's own
+   address and the phone button already has it filled in.) Claude opens a sign-in page: enter your
    key and press Allow.
 
 Now any Claude chat can work on your scene, as long as Magic Mirror is open on your PC.
-The Worker's home page shows whether a tab is connected.
+The Worker's `/status` page shows whether a tab is connected.
 
 ## Farm status on your phone
 

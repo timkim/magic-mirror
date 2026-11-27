@@ -100,7 +100,7 @@ The same tools are an MCP server, so Claude desktop or Claude Code can drive the
 claude mcp add --transport http magic-mirror http://localhost:8080/mcp
 ```
 
-**From your phone (claude.ai anywhere):** deploy the small Cloudflare Worker in [`cloud/`](cloud/README.md) (free plan), pair the tab with the phone button in the Assistant panel, and add the Worker's `/mcp` address as a custom connector in claude.ai. Sign-in asks for your own key, and Magic Mirror only needs to be open on your PC.
+**From your phone (claude.ai anywhere):** deploy the small Cloudflare Worker in [`cloud/`](cloud/README.md) (free plan; it also hosts Magic Mirror itself, and redeploys on every push to `main` once set up), pair the tab with the phone button in the Assistant panel, and add the Worker's `/mcp` address as a custom connector in claude.ai. Sign-in asks for your own key, and Magic Mirror only needs to be open on your PC.
 
 The bridge only accepts connections from the PC it runs on. Use `npm run farm -- --assistant-lan` to allow your network, and `--claude <path>` if `claude` isn't on the PATH. Tools are defined in `src/assistant/toolDefs.ts` and run in `src/assistant/tools.ts`.
 

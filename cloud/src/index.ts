@@ -4,7 +4,8 @@
 //   /authorize  Sign-in: the owner enters their key to let Claude in.
 //   /tab        WebSocket from the Magic Mirror tab (it authenticates with the same key).
 //   /farm       Render farm status for the phone, with notifications (see farm.ts).
-//   /           A short status page.
+//   /status     A short status page.
+//   everything else: the Magic Mirror app (static files from ../dist, see wrangler.jsonc).
 //
 // Tools are defined once in ../src/assistant/toolDefs.ts and run in the browser tab.
 
@@ -106,14 +107,14 @@ const defaultHandler: ExportedHandler<Env> = {
     if (farmResponse) return farmResponse;
     if (url.pathname === '/authorize') return authorize(request, env);
     if (url.pathname === '/tab') return relay(env).fetch(request); // the tab sends the key as its first message
-    if (url.pathname === '/') {
+    if (url.pathname === '/status' || url.pathname === '/') {
       const { tabs } = await relay(env).status();
       return page(
         'Magic Mirror connector',
         `<h1>Magic Mirror connector</h1>
 <p>${tabs ? `<strong>${tabs} Magic Mirror tab${tabs > 1 ? 's' : ''} connected.</strong>` : 'No Magic Mirror tab is connected right now.'}</p>
 <p>In claude.ai, add a custom connector with this address:<br><code>${escape(url.origin)}/mcp</code></p>
-<p><a href="/farm" style="color:#ededed">Farm status →</a></p>`,
+<p><a href="/" style="color:#ededed">Open Magic Mirror →</a> · <a href="/farm" style="color:#ededed">Farm status →</a></p>`,
       );
     }
     return new Response('Not found', { status: 404 });

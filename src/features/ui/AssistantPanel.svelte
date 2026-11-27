@@ -19,7 +19,8 @@
   let list: HTMLElement;
   let showConnect = $state(false);
   let showPhone = $state(false);
-  let phoneUrl = $state($cloudUrl);
+  // Opened from the Worker itself (the hosted site): that's the connector's address.
+  let phoneUrl = $state($cloudUrl || (location.protocol === 'https:' && !/^(localhost|127\.)/.test(location.hostname) ? location.origin : ''));
   let phoneKey = $state('');
   let mcpUrl = $derived(new URL('/mcp', $farmUrl).toString());
   // The client updates messages in place, so give the view fresh objects on every change.
