@@ -81,6 +81,7 @@ export function postFromSettings(s: Settings): PostParams {
     bloomScale: s.num('bloom.scale'),
     bloomAspect: s.num('bloom.aspect'),
     bloomThreshold: s.num('bloom.threshold'),
+    denoise: s.bool('dn.enabled') ? s.num('dn.strength') : 0,
   };
 }
 

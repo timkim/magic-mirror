@@ -7,7 +7,7 @@ use std::{env, fs, path::Path};
 fn main() {
     let out = env::var("OUT_DIR").unwrap();
     let dir = Path::new("../src/render/shaders");
-    for name in ["pathtrace", "present", "bloom"] {
+    for name in ["pathtrace", "present", "bloom", "denoise"] {
         let path = dir.join(format!("{name}.wgsl.ts"));
         println!("cargo:rerun-if-changed={}", path.display());
         let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));

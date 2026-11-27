@@ -9,6 +9,8 @@ use wgpu::util::DeviceExt;
 const PATHTRACE: &str = include_str!(concat!(env!("OUT_DIR"), "/pathtrace.wgsl"));
 const PRESENT: &str = include_str!(concat!(env!("OUT_DIR"), "/present.wgsl"));
 const BLOOM: &str = include_str!(concat!(env!("OUT_DIR"), "/bloom.wgsl"));
+const DENOISE: &str = include_str!(concat!(env!("OUT_DIR"), "/denoise.wgsl"));
+const DENOISE_PASSES: usize = 5;
 const BRICK: usize = 8;
 const PARAMS_BYTES: u64 = 18 * 16;
 
@@ -32,6 +34,15 @@ pub struct Renderer {
     env_table: wgpu::Buffer,
     env_sample: [u32; 2],
     accum: Option<wgpu::Buffer>,
+    // Denoiser (see src/render/shaders/denoise.wgsl.ts): first-hit guides and two ping-pong buffers.
+    feat: Option<wgpu::Buffer>,
+    ping_a: Option<wgpu::Buffer>,
+    ping_b: Option<wgpu::Buffer>,
+    dn_layout: wgpu::BindGroupLayout,
+    dn_prep: wgpu::ComputePipeline,
+    dn_atrous: wgpu::ComputePipeline,
+    dn_finish: wgpu::ComputePipeline,
+    dn_uniforms: Vec<wgpu::Buffer>,
     bloom_a: Option<wgpu::Texture>,
     bloom_b: Option<wgpu::Texture>,
     target: Option<wgpu::Texture>,
@@ -102,12 +113,48 @@ impl Renderer {
         let bloom_prep = compute("prep");
         let bloom_blur = compute("blur");
 
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let dn_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("denoise"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                storage(1, true),
+                storage(2, true),
+                storage(3, true),
+                storage(4, false),
+            ],
+        });
+        let dn_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("denoise"), bind_group_layouts: &[Some(&dn_layout)], ..Default::default() });
+        let dn = shader(&device, "denoise", DENOISE);
+        let dn_pipe = |entry: &str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&dn_pipeline_layout),
+                module: &dn,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let (dn_prep, dn_atrous, dn_finish) = (dn_pipe("prep"), dn_pipe("atrous"), dn_pipe("finish"));
+
         let uniform = |size: u64| {
             device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
         };
         let params = uniform(PARAMS_BYTES);
         let post = uniform(32);
         let bloom_uniforms = [uniform(48), uniform(48), uniform(48)];
+        let dn_uniforms = (0..DENOISE_PASSES + 2).map(|_| uniform(32)).collect();
         let materials = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("materials"),
             size: 256 * 64,
@@ -143,6 +190,14 @@ impl Renderer {
             bricks: vec![],
             env_sample: [0, 0],
             accum: None,
+            feat: None,
+            ping_a: None,
+            ping_b: None,
+            dn_layout,
+            dn_prep,
+            dn_atrous,
+            dn_finish,
+            dn_uniforms,
             bloom_a: None,
             bloom_b: None,
             target: None,
@@ -306,6 +361,13 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         }));
+        let px = width as u64 * height as u64;
+        let buffer = |label: &str, size: u64| {
+            Some(self.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }))
+        };
+        self.feat = buffer("denoise guides", px * 32);
+        self.ping_a = buffer("denoise a", px * 16);
+        self.ping_b = buffer("denoise b", px * 16);
         let (bw, bh) = (width.div_ceil(4).max(1), height.div_ceil(4).max(1));
         let tex = |label: &str, w: u32, h: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
             self.device.create_texture(&wgpu::TextureDescriptor {
@@ -372,6 +434,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 4, resource: self.accum.as_ref().unwrap().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.env_tex.create_view(&Default::default())) },
                 wgpu::BindGroupEntry { binding: 6, resource: self.env_table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: self.feat.as_ref().unwrap().as_entire_binding() },
             ],
         })
     }
@@ -393,7 +456,54 @@ impl Renderer {
         }
     }
 
-    fn encode_bloom(&self, enc: &mut wgpu::CommandEncoder, p: &Post) {
+    /// Denoise the current average into ping_a (same passes as renderer.ts).
+    fn encode_denoise(&self, enc: &mut wgpu::CommandEncoder, strength: f64) {
+        let n = DENOISE_PASSES;
+        for u in 0..n + 2 {
+            let step = if u >= 1 && u <= n { (1u32 << (u - 1)) as f32 } else { 1.0 };
+            let mut buf = [0u8; 32];
+            buf[0..8].copy_from_slice(bytemuck::cast_slice(&[self.width, self.height]));
+            buf[8..20].copy_from_slice(bytemuck::cast_slice(&[self.samples.max(1) as f32, step, strength as f32]));
+            self.queue.write_buffer(&self.dn_uniforms[u], 0, &buf);
+        }
+        let (a, b) = (self.ping_a.as_ref().unwrap(), self.ping_b.as_ref().unwrap());
+        let group = |u: usize, src: &wgpu::Buffer, dst: &wgpu::Buffer| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("denoise"),
+                layout: &self.dn_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: self.dn_uniforms[u].as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: self.accum.as_ref().unwrap().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.feat.as_ref().unwrap().as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: src.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: dst.as_entire_binding() },
+                ],
+            })
+        };
+        let mut groups = vec![group(0, b, a)];
+        let (mut from, mut to) = (a, b);
+        for k in 0..n {
+            groups.push(group(k + 1, from, to));
+            std::mem::swap(&mut from, &mut to);
+        }
+        groups.push(group(n + 1, from, to));
+        assert!(std::ptr::eq(to, a), "denoised result must land in ping_a");
+        let wg = (self.width.div_ceil(8), self.height.div_ceil(8));
+        let mut pass = enc.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&self.dn_prep);
+        pass.set_bind_group(0, &groups[0], &[]);
+        pass.dispatch_workgroups(wg.0, wg.1, 1);
+        pass.set_pipeline(&self.dn_atrous);
+        for g in &groups[1..=n] {
+            pass.set_bind_group(0, g, &[]);
+            pass.dispatch_workgroups(wg.0, wg.1, 1);
+        }
+        pass.set_pipeline(&self.dn_finish);
+        pass.set_bind_group(0, &groups[n + 1], &[]);
+        pass.dispatch_workgroups(wg.0, wg.1, 1);
+    }
+
+    fn encode_bloom(&self, enc: &mut wgpu::CommandEncoder, p: &Post, source: &wgpu::Buffer, samples: f32) {
         let (a, b) = (self.bloom_a.as_ref().unwrap(), self.bloom_b.as_ref().unwrap());
         let (bw, bh) = (a.width(), a.height());
         let r = p.bloom_scale * bh as f64 * 0.25;
@@ -401,7 +511,7 @@ impl Renderer {
         let write = |i: usize, radius: f64, dir: [f32; 2]| {
             let mut buf = [0u8; 48];
             buf[0..16].copy_from_slice(bytemuck::cast_slice(&[self.width, self.height, bw, bh]));
-            buf[16..40].copy_from_slice(bytemuck::cast_slice(&[self.samples.max(1) as f32, p.exposure as f32, p.bloom_threshold as f32, radius as f32, dir[0], dir[1]]));
+            buf[16..40].copy_from_slice(bytemuck::cast_slice(&[samples, p.exposure as f32, p.bloom_threshold as f32, radius as f32, dir[0], dir[1]]));
             self.queue.write_buffer(&self.bloom_uniforms[i], 0, &buf);
         };
         write(0, 0.0, [0.0, 0.0]);
@@ -413,7 +523,7 @@ impl Renderer {
             layout: &self.bloom_prep.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.bloom_uniforms[0].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.accum.as_ref().unwrap().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view(a)) },
             ],
         });
@@ -446,12 +556,18 @@ impl Renderer {
     pub fn read_pixels(&self, p: &Post) -> Vec<u8> {
         let target = self.target.as_ref().unwrap();
         let mut enc = self.device.create_command_encoder(&Default::default());
+        let denoise = p.denoise > 0.0 && self.samples > 0;
+        if denoise {
+            self.encode_denoise(&mut enc, p.denoise);
+        }
+        // The denoised image is already an average; the raw one is a sum of samples.
+        let (source, samples) = if denoise { (self.ping_a.as_ref().unwrap(), 1.0) } else { (self.accum.as_ref().unwrap(), self.samples.max(1) as f32) };
         if p.bloom_mix > 0.0 {
-            self.encode_bloom(&mut enc, p);
+            self.encode_bloom(&mut enc, p, source, samples);
         }
         let mut buf = [0u8; 32];
         buf[0..8].copy_from_slice(bytemuck::cast_slice(&[self.width, self.height]));
-        buf[8..16].copy_from_slice(bytemuck::cast_slice(&[self.samples.max(1) as f32, p.exposure as f32]));
+        buf[8..16].copy_from_slice(bytemuck::cast_slice(&[samples, p.exposure as f32]));
         buf[16..20].copy_from_slice(bytemuck::bytes_of(&p.tonemap));
         buf[20..32].copy_from_slice(bytemuck::cast_slice(&[p.gamma as f32, p.vignette as f32, p.bloom_mix as f32]));
         self.queue.write_buffer(&self.post, 0, &buf);
@@ -460,7 +576,7 @@ impl Renderer {
             layout: &self.present.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.post.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.accum.as_ref().unwrap().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.bloom_a.as_ref().unwrap().create_view(&Default::default())) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],

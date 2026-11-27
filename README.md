@@ -169,6 +169,8 @@ test-scenes/  one small scene per feature being matched
 
 **Rendering:** progressive path tracing, one sample per pixel per pass, accumulated and then tone mapped. Rays skip empty space using an 8×8×8 "brick" occupancy grid, then step voxel by voxel inside occupied bricks. Direct light (sun or HDR sky) is traced through a single shadow-ray call in the shader, which keeps GPU compile times short. The renderer only needs a `GPUDevice`, so the same code runs in the browser and headless.
 
+**Denoising:** on by default (Image panel → Denoise). The path tracer also records what each pixel's camera ray first hits (colour, surface direction, depth); an edge-aware à-trous filter (`src/render/shaders/denoise.wgsl.ts`) smooths the noise in the lighting without crossing voxel edges, then puts the colours back. It estimates each pixel's noise from its own samples, so it fades out as a frame converges. At 4 samples per pixel the result is closer to a 1,024-sample reference than 16 raw samples are, so farm frames can use far fewer samples. Browser, Node and Rust renderers run the same shader. Volumes (fog, clouds) have no surface to guide it, so they clean up less.
+
 **Animation:** the voxel grid covers every frame's bounds, and moving to another frame rewrites and re-uploads only the regions where models moved (well under 1% of the grid per frame for a typical city scene).
 
 ### Adding a feature

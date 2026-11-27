@@ -79,6 +79,8 @@ pub struct Post {
     pub bloom_scale: f64,
     pub bloom_aspect: f64,
     pub bloom_threshold: f64,
+    /// Denoiser strength; 0 = off.
+    pub denoise: f64,
 }
 
 fn rad(d: f64) -> f64 {
@@ -172,6 +174,7 @@ pub fn post(s: &Snapshot) -> Post {
         bloom_scale: s.num("bloom.scale", 0.4),
         bloom_aspect: s.num("bloom.aspect", 0.5),
         bloom_threshold: s.num("bloom.threshold", 0.0),
+        denoise: if s.boolean("dn.enabled", true) { s.num("dn.strength", 1.0) } else { 0.0 },
     }
 }
 

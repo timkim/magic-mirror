@@ -165,6 +165,8 @@ export const outputFeature: Feature = {
         { key: 'post.tonemap', label: 'Tone mapping', type: 'select', default: 'aces', resetsRender: false, options: [{ value: 'aces', label: 'ACES' }, { value: 'reinhard', label: 'Reinhard' }, { value: 'none', label: 'None (clip)' }] },
         { key: 'post.gamma', label: 'Gamma', type: 'number', default: 2.2, min: 1, max: 3, step: 0.01, resetsRender: false },
         { key: 'post.vignette', label: 'Vignette', type: 'number', default: 0, min: 0, max: 1, step: 0.01, resetsRender: false },
+        { key: 'dn.enabled', label: 'Denoise', type: 'bool', default: true, resetsRender: false, help: 'Clean up noise using what each pixel sees first (colour, surface direction, depth). Fades out as the image converges.' },
+        { key: 'dn.strength', label: 'Denoise strength', type: 'number', default: 1, min: 0.1, max: 4, step: 0.05, resetsRender: false, help: 'Higher smooths more, at the risk of softening soft shadows and reflections' },
         { key: 'bloom.mix', label: 'Bloom', type: 'number', default: 0, min: 0, max: 1, step: 0.01, resetsRender: false },
         { key: 'bloom.scale', label: 'Bloom size', type: 'number', default: 0.4, min: 0, max: 1, step: 0.01, resetsRender: false },
         { key: 'bloom.aspect', label: 'Bloom stretch', type: 'number', default: 0.5, min: 0, max: 1, step: 0.01, resetsRender: false, help: '0.5 = round, higher = wider' },

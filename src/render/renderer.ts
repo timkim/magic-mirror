@@ -4,6 +4,7 @@
 import { PATHTRACE_WGSL } from './shaders/pathtrace.wgsl';
 import { PRESENT_WGSL } from './shaders/present.wgsl';
 import { BLOOM_WGSL } from './shaders/bloom.wgsl';
+import { DENOISE_WGSL } from './shaders/denoise.wgsl';
 import { buildMaterialTable } from './materials';
 import type { GridBox, VoxelGrid } from '../vox/scene';
 import type { VoxDict } from '../vox/types';
@@ -57,6 +58,8 @@ export interface PostParams {
   bloomScale: number; // blur size relative to image height
   bloomAspect: number; // 0.5 = round; higher = wider
   bloomThreshold: number;
+  /** Denoiser strength; 0 = off. */
+  denoise: number;
 }
 
 export interface FrameParams {
@@ -91,6 +94,21 @@ export class Renderer {
   private traceGroup: GPUBindGroup | null = null;
   private presentGroup: GPUBindGroup | null = null;
   private bloomGroups: GPUBindGroup[] = [];
+  // Denoiser: first-hit guides, two ping-pong buffers, one uniform buffer per pass.
+  private feat: GPUBuffer | null = null;
+  private pingA: GPUBuffer | null = null;
+  private pingB: GPUBuffer | null = null;
+  private denoiseLayout: GPUBindGroupLayout;
+  private denoisePipes: { prep: GPUComputePipeline; atrous: GPUComputePipeline; finish: GPUComputePipeline };
+  private denoiseUniforms: GPUBuffer[];
+  private denoiseGroups: GPUBindGroup[] = [];
+  private presentDenoised: GPUBindGroup | null = null;
+  private bloomPrepDenoised: GPUBindGroup | null = null;
+  private denoised: GPUBuffer | null = null;
+  private lastDenoise = '';
+  /** Bumped on every reset, so a restarted render is denoised again even at the same sample count. */
+  private renderId = 0;
+  static readonly DENOISE_PASSES = 5;
   private grid: VoxelGrid | null = null;
   private bricks: Uint8Array | null = null;
   private frame: FrameParams | null = null;
@@ -118,6 +136,22 @@ export class Renderer {
     const bloomShader = device.createShaderModule({ label: 'bloom', code: BLOOM_WGSL });
     this.bloomPrep = device.createComputePipeline({ label: 'bloom-prep', layout: 'auto', compute: { module: bloomShader, entryPoint: 'prep' } });
     this.bloomBlur = device.createComputePipeline({ label: 'bloom-blur', layout: 'auto', compute: { module: bloomShader, entryPoint: 'blur' } });
+    const dn = device.createShaderModule({ label: 'denoise', code: DENOISE_WGSL });
+    const S = GPUShaderStage.COMPUTE;
+    this.denoiseLayout = device.createBindGroupLayout({
+      label: 'denoise',
+      entries: [
+        { binding: 0, visibility: S, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: S, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: S, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: S, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: S, buffer: { type: 'storage' } },
+      ],
+    });
+    const dl = device.createPipelineLayout({ bindGroupLayouts: [this.denoiseLayout] });
+    const pipe = (entryPoint: string) => device.createComputePipeline({ label: `denoise-${entryPoint}`, layout: dl, compute: { module: dn, entryPoint } });
+    this.denoisePipes = { prep: pipe('prep'), atrous: pipe('atrous'), finish: pipe('finish') };
+    this.denoiseUniforms = Array.from({ length: Renderer.DENOISE_PASSES + 2 }, () => device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }));
 
     const U = GPUBufferUsage;
     this.params = device.createBuffer({ size: PARAMS_BYTES, usage: U.UNIFORM | U.COPY_DST });
@@ -132,7 +166,7 @@ export class Renderer {
   /** Check shaders compiled; returns error messages (empty when fine). */
   static async shaderErrors(device: GPUDevice): Promise<string[]> {
     const errs: string[] = [];
-    for (const [label, code] of [['pathtrace', PATHTRACE_WGSL], ['present', PRESENT_WGSL], ['bloom', BLOOM_WGSL]]) {
+    for (const [label, code] of [['pathtrace', PATHTRACE_WGSL], ['present', PRESENT_WGSL], ['bloom', BLOOM_WGSL], ['denoise', DENOISE_WGSL]]) {
       const info = await device.createShaderModule({ label, code }).getCompilationInfo();
       for (const m of info.messages) if (m.type === 'error') errs.push(`${label}:${m.lineNum}:${m.linePos} ${m.message}`);
     }
@@ -249,6 +283,10 @@ export class Renderer {
     this.height = height;
     this.accum?.destroy();
     this.accum = this.device.createBuffer({ size: width * height * 16, usage: GPUBufferUsage.STORAGE });
+    for (const b of [this.feat, this.pingA, this.pingB]) b?.destroy();
+    this.feat = this.device.createBuffer({ size: width * height * 32, usage: GPUBufferUsage.STORAGE });
+    this.pingA = this.device.createBuffer({ size: width * height * 16, usage: GPUBufferUsage.STORAGE });
+    this.pingB = this.device.createBuffer({ size: width * height * 16, usage: GPUBufferUsage.STORAGE });
     this.bloomA?.destroy();
     this.bloomB?.destroy();
     const bw = Math.max(1, Math.ceil(width / 4)), bh = Math.max(1, Math.ceil(height / 4));
@@ -266,6 +304,7 @@ export class Renderer {
 
   reset() {
     this.samples = 0;
+    this.renderId++;
   }
 
   get ready() {
@@ -273,7 +312,7 @@ export class Renderer {
   }
 
   private rebind() {
-    if (!this.voxelTex || !this.brickTex || !this.accum || !this.bloomA || !this.bloomB) return;
+    if (!this.voxelTex || !this.brickTex || !this.accum || !this.bloomA || !this.bloomB || !this.feat || !this.pingA || !this.pingB) return;
     const d = this.device;
     this.traceGroup = d.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
@@ -285,8 +324,31 @@ export class Renderer {
         { binding: 4, resource: { buffer: this.accum } },
         { binding: 5, resource: this.envTex.createView() },
         { binding: 6, resource: { buffer: this.envTable } },
+        { binding: 7, resource: { buffer: this.feat } },
       ],
     });
+    // Denoiser: prep → A, then à-trous A→B, B→A, … , then finish into A (read by present).
+    const A = this.pingA, B = this.pingB, feat = this.feat;
+    const dgroup = (u: number, src: GPUBuffer, dst: GPUBuffer) =>
+      d.createBindGroup({
+        layout: this.denoiseLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.denoiseUniforms[u] } },
+          { binding: 1, resource: { buffer: this.accum! } },
+          { binding: 2, resource: { buffer: feat } },
+          { binding: 3, resource: { buffer: src } },
+          { binding: 4, resource: { buffer: dst } },
+        ],
+      });
+    this.denoiseGroups = [dgroup(0, B, A)];
+    let from = A, to = B;
+    for (let k = 0; k < Renderer.DENOISE_PASSES; k++) {
+      this.denoiseGroups.push(dgroup(k + 1, from, to));
+      [from, to] = [to, from];
+    }
+    // `from` holds the last pass's result; finish writes into the other buffer.
+    this.denoiseGroups.push(dgroup(Renderer.DENOISE_PASSES + 1, from, to));
+    this.denoised = to;
     this.presentGroup = d.createBindGroup({
       layout: this.presentPipeline.getBindGroupLayout(0),
       entries: [
@@ -294,6 +356,23 @@ export class Renderer {
         { binding: 1, resource: { buffer: this.accum } },
         { binding: 2, resource: this.bloomA.createView() },
         { binding: 3, resource: this.sampler },
+      ],
+    });
+    this.presentDenoised = d.createBindGroup({
+      layout: this.presentPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.post } },
+        { binding: 1, resource: { buffer: this.denoised } },
+        { binding: 2, resource: this.bloomA.createView() },
+        { binding: 3, resource: this.sampler },
+      ],
+    });
+    this.bloomPrepDenoised = d.createBindGroup({
+      layout: this.bloomPrep.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.bloomUniforms[0] } },
+        { binding: 1, resource: { buffer: this.denoised } },
+        { binding: 2, resource: this.bloomA.createView() },
       ],
     });
     this.bloomGroups = [
@@ -372,7 +451,31 @@ export class Renderer {
     }
   }
 
-  private encodeBloom(encoder: GPUCommandEncoder, post: PostParams) {
+  private encodeDenoise(encoder: GPUCommandEncoder, strength: number) {
+    const n = Renderer.DENOISE_PASSES;
+    for (let u = 0; u < n + 2; u++) {
+      const buf = new ArrayBuffer(32);
+      new Uint32Array(buf).set([this.width, this.height], 0);
+      new Float32Array(buf).set([Math.max(1, this.samples), u >= 1 && u <= n ? 2 ** (u - 1) : 1, strength], 2);
+      this.device.queue.writeBuffer(this.denoiseUniforms[u], 0, buf);
+    }
+    const wg: [number, number] = [Math.ceil(this.width / 8), Math.ceil(this.height / 8)];
+    const pass = encoder.beginComputePass({ label: 'denoise' });
+    pass.setPipeline(this.denoisePipes.prep);
+    pass.setBindGroup(0, this.denoiseGroups[0]);
+    pass.dispatchWorkgroups(...wg);
+    pass.setPipeline(this.denoisePipes.atrous);
+    for (let k = 1; k <= n; k++) {
+      pass.setBindGroup(0, this.denoiseGroups[k]);
+      pass.dispatchWorkgroups(...wg);
+    }
+    pass.setPipeline(this.denoisePipes.finish);
+    pass.setBindGroup(0, this.denoiseGroups[n + 1]);
+    pass.dispatchWorkgroups(...wg);
+    pass.end();
+  }
+
+  private encodeBloom(encoder: GPUCommandEncoder, post: PostParams, samples: number) {
     const bw = this.bloomA!.width, bh = this.bloomA!.height;
     const r = post.bloomScale * bh * 0.25;
     const rx = r * 2 * post.bloomAspect, ry = r * 2 * (1 - post.bloomAspect);
@@ -380,7 +483,7 @@ export class Renderer {
       const buf = new ArrayBuffer(48);
       const u = new Uint32Array(buf), f = new Float32Array(buf);
       u.set([this.width, this.height, bw, bh], 0);
-      f.set([Math.max(1, this.samples), post.exposure, post.bloomThreshold, radius, dir[0], dir[1]], 4);
+      f.set([samples, post.exposure, post.bloomThreshold, radius, dir[0], dir[1]], 4);
       this.device.queue.writeBuffer(this.bloomUniforms[i], 0, buf);
     };
     write(0, 0, [0, 0]);
@@ -389,7 +492,7 @@ export class Renderer {
     const pass = encoder.beginComputePass();
     const wg: [number, number] = [Math.ceil(bw / 8), Math.ceil(bh / 8)];
     pass.setPipeline(this.bloomPrep);
-    pass.setBindGroup(0, this.bloomGroups[0]);
+    pass.setBindGroup(0, post.denoise > 0 ? this.bloomPrepDenoised! : this.bloomGroups[0]);
     pass.dispatchWorkgroups(...wg);
     pass.setPipeline(this.bloomBlur);
     pass.setBindGroup(0, this.bloomGroups[1]); // A → B horizontally
@@ -402,17 +505,26 @@ export class Renderer {
   /** Draw the current average into a texture view (canvas or offscreen). */
   present(encoder: GPUCommandEncoder, target: GPUTextureView, post: PostParams) {
     if (!this.ready) return;
-    if (post.bloomMix > 0) this.encodeBloom(encoder, post);
+    const denoise = post.denoise > 0 && this.samples > 0;
+    // The view is redrawn every frame; only denoise again when there's something new.
+    const key = `${this.samples}|${post.denoise}|${this.width}x${this.height}|${this.renderId}`;
+    if (denoise && key !== this.lastDenoise) {
+      this.encodeDenoise(encoder, post.denoise);
+      this.lastDenoise = key;
+    }
+    // The denoised image is already an average; the raw one is a sum of samples.
+    const samples = denoise ? 1 : Math.max(1, this.samples);
+    if (post.bloomMix > 0) this.encodeBloom(encoder, { ...post, denoise: denoise ? post.denoise : 0 }, samples);
     const buf = new ArrayBuffer(32);
     const fv = new Float32Array(buf), uv = new Uint32Array(buf);
     uv.set([this.width, this.height], 0);
-    fv.set([Math.max(1, this.samples), post.exposure], 2);
+    fv.set([samples, post.exposure], 2);
     uv[4] = { none: 0, aces: 1, reinhard: 2 }[post.tonemap];
     fv.set([post.gamma, post.vignette, post.bloomMix], 5);
     this.device.queue.writeBuffer(this.post, 0, buf);
     const pass = encoder.beginRenderPass({ colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
     pass.setPipeline(this.presentPipeline);
-    pass.setBindGroup(0, this.presentGroup!);
+    pass.setBindGroup(0, denoise ? this.presentDenoised! : this.presentGroup!);
     pass.draw(3);
     pass.end();
   }

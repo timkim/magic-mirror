@@ -43,6 +43,9 @@ struct Material {
 @group(0) @binding(4) var<storage, read_write> accum: array<vec4f>;
 @group(0) @binding(5) var envTex: texture_2d<f32>;
 @group(0) @binding(6) var<storage, read> envTable: array<f32>;
+// Denoiser guides, summed like accum: per pixel [albedo, depth] and [normal, Σ illumination luminance²]
+// of what the camera ray first hits (see denoise.wgsl.ts).
+@group(0) @binding(7) var<storage, read_write> feat: array<vec4f>;
 
 const PI = 3.14159265359;
 const BRICK = 8;
@@ -421,6 +424,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var neeInside = 0u;
   var done = false;
   var bounce = 0u;
+  // First thing the camera ray meets, for the denoiser (sky and volumes: no normal).
+  var fSet = false;
+  var fAlbedo = vec3f(1.0);
+  var fNormal = vec3f(0.0);
+  var fDepth = 1e4;
 
   loop {
     if (neePending) {
@@ -450,8 +458,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
     if (scatterT < BIG) {
-      if (bounce > maxBounces) { done = true; continue; }
       let p = ro + rd * scatterT;
+      if (!fSet) { fSet = true; fDepth = distance(p, P.camPos.xyz); }
+      if (bounce > maxBounces) { done = true; continue; }
       throughput *= scatterColor;
       if (P.sunColor.w > 0.5) {
         let l = sampleCone(P.sunDir.xyz, P.sunDir.w);
@@ -466,6 +475,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (!h.hit) {
+      fSet = true;
       var sky = select(skyRadiance(rd), backgroundRadiance(rd), cameraPath);
       // The sky was also sampled directly at the last diffuse bounce: combine the two (MIS).
       if (lastDiffusePdf > 0.0 && envSampling()) {
@@ -498,7 +508,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (h.id == GROUND_ID && cameraPath && P.extra.y > 0.0) {
       let r = P.extra.x;
       let fade = smoothstep(r, r * (1.0 + P.extra.y * 40.0), length(hp.xy - (P.gridOrigin.xy + vec2f(P.dims.xy) * 0.5)));
-      if (rand() < fade) { radiance += throughput * backgroundRadiance(rd); done = true; continue; }
+      if (rand() < fade) { fSet = true; radiance += throughput * backgroundRadiance(rd); done = true; continue; }
     }
 
     var m: Material;
@@ -525,6 +535,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     let albedo = m.color.rgb;
     let mtype = m.a.x;
+    if (!fSet) { fSet = true; fAlbedo = albedo; fNormal = h.n; fDepth = distance(hp, P.camPos.xyz); }
     if (mtype == 3.0 && m.a.w > 0.0) {
       // TODO(match): calibrate emission strength against MagicaVoxel (_emit, _flux, _ldr).
       radiance += throughput * albedo * m.a.w * exp2(m.b.y) * 0.5;
@@ -586,7 +597,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Clamp rare fireflies so progressive frames settle quickly.
   radiance = min(radiance, vec3f(64.0));
-  let prev = select(vec4f(0.0), accum[pixel], P.dims.w > 0u);
+  let first = P.dims.w == 0u;
+  let prev = select(accum[pixel], vec4f(0.0), first);
   accum[pixel] = prev + vec4f(radiance, 1.0);
+  let il = dot(radiance / max(fAlbedo, vec3f(0.02)), vec3f(0.2126, 0.7152, 0.0722));
+  let fa = select(feat[2u * pixel], vec4f(0.0), first);
+  let fb = select(feat[2u * pixel + 1u], vec4f(0.0), first);
+  feat[2u * pixel] = fa + vec4f(fAlbedo, fDepth);
+  feat[2u * pixel + 1u] = fb + vec4f(fNormal, min(il * il, 1e6));
 }
 `;
