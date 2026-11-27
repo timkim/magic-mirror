@@ -6,7 +6,7 @@
 import { get, writable } from 'svelte/store';
 import { IDENTITY_ROT } from '../vox/parser';
 import { placementBounds, worldToModel, type PlacedModel } from '../vox/scene';
-import type { GroupNode, VoxDict, VoxFile } from '../vox/types';
+import type { GroupNode, TransformFrame, VoxDict, VoxFile } from '../vox/types';
 import type { Command, History } from './history';
 import { cameraRay, castRay, planeCell, type GridHit } from './pick';
 import { ModelVolume } from './volume';
@@ -151,6 +151,30 @@ export class VoxelEditor {
     };
     this.history.run({ label: `New model "${name}"`, apply, revert });
     return modelId;
+  }
+
+  /**
+   * Replace an object's transform frames (its position, rotation and keyframes). One frame with
+   * no `frame` number makes it static. Translations are relative to its parent, like the file.
+   */
+  setTransform(nodeId: number, frames: TransformFrame[], label = 'Move object') {
+    const file = this.host.file!;
+    const node = file.nodes.get(nodeId);
+    if (node?.kind !== 'transform') throw new Error(`No object with id ${nodeId}`);
+    const before = node.frames;
+    const after = frames.map((f) => ({ ...f, attrs: undefined }));
+    const set = (fr: TransformFrame[]) => {
+      node.frames = fr;
+      this.host.structureChanged();
+    };
+    this.history.run({ label, apply: () => set(after), revert: () => set(before) });
+  }
+
+  /** Run several edits as one undo step. */
+  group(label: string, fn: () => void) {
+    const start = this.history.size;
+    fn();
+    this.history.squash(start, label);
   }
 
   private diffCommand(modelId: number, diff: Diff, label: string): Command {

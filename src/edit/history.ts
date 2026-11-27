@@ -33,6 +33,23 @@ export class History {
     this.changed();
   }
 
+  /** Number of steps that can be undone. */
+  get size() {
+    return this.done.length;
+  }
+
+  /** Merge every step recorded since `start` into one step. */
+  squash(start: number, label: string) {
+    const cmds = this.done.splice(start);
+    if (cmds.length === 0) return;
+    this.done.push({
+      label,
+      apply: () => cmds.forEach((c) => c.apply()),
+      revert: () => [...cmds].reverse().forEach((c) => c.revert()),
+    });
+    this.changed();
+  }
+
   undo() {
     const c = this.done.pop();
     if (!c) return null;

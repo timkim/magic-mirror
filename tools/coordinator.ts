@@ -4,6 +4,10 @@
 // It also serves the built app, so other PCs can just open http://<this-pc>:8080.
 //
 //   npm run build && npm run farm -- [--port 8080] [--out farm-output] [--lease 600]
+//                                    [--claude path/to/claude] [--assistant-lan]
+//
+// It also runs the assistant bridge (tools/assistant.ts): the chat panel and an MCP server
+// at /mcp, both using Claude Code on this PC.
 //
 // There is no login: run it on a trusted home network only.
 
@@ -13,8 +17,9 @@ import { spawn } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import { extname, join, normalize, resolve } from 'node:path';
 import { FarmQueue, type JobSpec } from '../src/farm/queue';
+import { createAssistant } from './assistant';
 
-interface Options { port: number; out: string; leaseSeconds: number; dist: string }
+interface Options { port: number; out: string; leaseSeconds: number; dist: string; claude: string; assistantLan: boolean }
 
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png',
@@ -46,7 +51,8 @@ function hasFfmpeg(): Promise<boolean> {
 }
 
 export function startCoordinator(opts: Partial<Options> = {}) {
-  const o: Options = { port: 8080, out: 'farm-output', leaseSeconds: 600, dist: 'dist', ...opts };
+  const o: Options = { port: 8080, out: 'farm-output', leaseSeconds: 600, dist: 'dist', claude: process.env.MAGIC_MIRROR_CLAUDE ?? 'claude', assistantLan: false, ...opts };
+  const assistant = createAssistant({ port: o.port, claude: o.claude, lan: o.assistantLan });
   const queue = new FarmQueue(o.leaseSeconds * 1000);
   const store = new Map<string, { scene?: Buffer; hdr?: Buffer; dir: string }>();
   mkdirSync(o.out, { recursive: true });
@@ -96,6 +102,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
     try {
       const url = new URL(req.url ?? '/', 'http://x');
       const parts = url.pathname.split('/').filter(Boolean);
+      if (await assistant(req, res, url)) return;
       if (req.method === 'OPTIONS') return send(res, 204);
       if (parts[0] !== 'api') return serveStatic(res, url.pathname);
 
@@ -185,6 +192,7 @@ export function startCoordinator(opts: Partial<Options> = {}) {
   server.listen(o.port, () => {
     const ips = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i!.address);
     console.log(`[prism] coordinator on port ${o.port}; output in ${resolve(o.out)}`);
+    console.log(`[prism] Magic Mirror: http://localhost:${o.port}  ·  assistant MCP: http://localhost:${o.port}/mcp`);
     for (const ip of ips) console.log(`[prism] other PCs: open http://${ip}:${o.port}  or run: npm run worker -- http://${ip}:${o.port}`);
   });
   return { server, queue };
@@ -193,5 +201,8 @@ export function startCoordinator(opts: Partial<Options> = {}) {
 if (process.argv[1] && /coordinator\.(ts|mjs)$/.test(process.argv[1])) {
   const a = process.argv.slice(2);
   const get = (k: string) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
-  startCoordinator({ port: Number(get('--port') ?? 8080), out: get('--out') ?? 'farm-output', leaseSeconds: Number(get('--lease') ?? 600) });
+  startCoordinator({
+    port: Number(get('--port') ?? 8080), out: get('--out') ?? 'farm-output', leaseSeconds: Number(get('--lease') ?? 600),
+    claude: get('--claude') ?? process.env.MAGIC_MIRROR_CLAUDE ?? 'claude', assistantLan: a.includes('--assistant-lan'),
+  });
 }

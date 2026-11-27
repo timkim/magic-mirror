@@ -66,6 +66,23 @@ The **Palette** panel edits colours and materials (diffuse, metal, glass, emit, 
 
 Every change goes through one undo history, and the same calls the tools use are there for scripts (and the coming assistant): `app.editor.setVoxels(modelId, [[x, y, z, colour], …])`, `setColor`, `setMaterial` and `addModel`.
 
+## Assistant (Claude)
+
+The **Assistant** panel lets you ask Claude to change the scene ("add a lighthouse on the hill", "make the windows glow", "slow orbit at golden hour, 60 frames"). Claude looks at the scene, builds and edits models, sets colours, materials, keyframes and render settings, renders a preview to check its work, and can send the job to the farm. Every change lands in the undo history, and each reply has **Undo this reply**.
+
+It runs on your own Claude plan with no API key. The chat uses [Claude Code](https://claude.com/claude-code) on your PC:
+
+1. Install Claude Code and run `claude` once to sign in.
+2. `npm run build && npm run farm`, then open http://localhost:8080. The panel shows **Claude Code on this PC** when it's connected.
+
+The same tools are an MCP server, so Claude desktop or Claude Code can drive the open tab too (their changes show in the panel as well):
+
+```
+claude mcp add --transport http magic-mirror http://localhost:8080/mcp
+```
+
+The bridge only accepts connections from the PC it runs on. Use `npm run farm -- --assistant-lan` to allow your network, and `--claude <path>` if `claude` isn't on the PATH. Tools are defined in `src/assistant/toolDefs.ts` and run in `src/assistant/tools.ts`.
+
 ## Magic Prism render farm (network rendering)
 
 Spread an animation's frames across every PC on your home network.
@@ -124,6 +141,8 @@ src/
               updates only what moved between animation frames),
               serialize.ts (writes a scene back to .vox), writer.ts (test files), empty.ts
               (new scenes), renderSettings.ts (file settings → app settings)
+  assistant/  toolDefs.ts (the tools Claude can use), tools.ts (runs them), client.ts (chat panel
+              and the tab's connection to the bridge)
   edit/       editor.ts (voxel tools and the scripting API), history.ts (undo/redo),
               volume.ts (dense model editing), pick.ts (camera rays, projection, picking)
   render/     renderer.ts (GPU, no DOM), shaders/ (path tracer, bloom, present pass),
@@ -135,7 +154,8 @@ src/
   farm/       queue.ts (job queue and frame leases)
   ui/         App.svelte (shell), components/ (Viewport, Panel, SettingControl), stores.ts
   lib/        shadcn-svelte components and utils
-tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts
+tools/        make-test-scenes.ts, render-headless.ts, inspect-vox.ts, coordinator.ts, worker.ts,
+              assistant.ts (MCP server and chat bridge, part of the coordinator)
 rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, settings, renderer, farm)
 test-scenes/  one small scene per feature being matched
 ```
@@ -165,7 +185,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 
 ## Roadmap
 
-- **Assistant:** a chat panel where Claude changes the scene through the editor's commands (camera moves and keyframes, materials, building models), connected through MCP so it runs on your own Claude plan.
+- **Assistant:** a hosted MCP connector with sign-in (Cloudflare), so claude.ai on any device can drive Magic Mirror; camera keyframes as a tool.
 - **Editor:** resize, move and rotate models; layers; line and sphere brushes; camera keyframes on the timeline.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
 - **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.

@@ -8,6 +8,8 @@ export interface PlacedModel {
   rotation: Rot3;
   translation: [number, number, number];
   name?: string;
+  /** The transform node directly above the shape (what moving or animating this object edits). */
+  nodeId?: number;
 }
 
 export interface VoxelGrid {
@@ -77,7 +79,7 @@ export function placeModels(file: VoxFile, time = 0): PlacedModel[] {
     file.models.forEach((_, i) => out.push({ modelId: i, rotation: IDENTITY_ROT, translation: [0, 0, 0] }));
     return out;
   }
-  const visit = (id: number, rot: Rot3, tr: [number, number, number], name: string | undefined, depth: number) => {
+  const visit = (id: number, rot: Rot3, tr: [number, number, number], name: string | undefined, depth: number, nodeId?: number) => {
     const node = file.nodes.get(id);
     if (!node || depth > 256) return;
     if (node.attrs._hidden === '1') return;
@@ -85,12 +87,12 @@ export function placeModels(file: VoxFile, time = 0): PlacedModel[] {
       if (file.layers.get(node.layerId)?.hidden) return;
       const p = poseAt(node, time);
       const t = applyRot(rot, p.translation);
-      visit(node.childId, mulRot(rot, p.rotation), [tr[0] + t[0], tr[1] + t[1], tr[2] + t[2]], node.attrs._name ?? name, depth + 1);
+      visit(node.childId, mulRot(rot, p.rotation), [tr[0] + t[0], tr[1] + t[1], tr[2] + t[2]], node.attrs._name ?? name, depth + 1, node.id);
     } else if (node.kind === 'group') {
       for (const c of node.childIds) visit(c, rot, tr, name, depth + 1);
     } else {
       const modelId = shapeModelAt(node, time);
-      if (modelId !== undefined && file.models[modelId]) out.push({ modelId, rotation: rot, translation: tr, name });
+      if (modelId !== undefined && file.models[modelId]) out.push({ modelId, rotation: rot, translation: tr, name, nodeId });
     }
   };
   visit(0, IDENTITY_ROT, [0, 0, 0], undefined, 0);
@@ -171,7 +173,7 @@ export function placementBounds(file: VoxFile, p: PlacedModel) {
 }
 
 const samePlacement = (a: PlacedModel, b: PlacedModel) =>
-  a.modelId === b.modelId && a.translation.every((v, i) => v === b.translation[i]) && a.rotation.every((v, i) => v === b.rotation[i]);
+  a.nodeId === b.nodeId && a.modelId === b.modelId && a.translation.every((v, i) => v === b.translation[i]) && a.rotation.every((v, i) => v === b.rotation[i]);
 
 /**
  * Keeps one voxel grid for a whole animation. The grid's bounds cover every frame, so moving
