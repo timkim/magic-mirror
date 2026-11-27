@@ -150,7 +150,7 @@ cargo build --release          # → rust/target/release/prism (prism.exe on Win
 
 ```
 src/
-  vox/        parser.ts (reads .vox), scene.ts (scene graph → world voxel grid; SceneBaker
+  vox/        parser.ts (reads .vox), grid.ts (sparse brick grid), scene.ts (scene graph → grid; SceneBaker
               updates only what moved between animation frames),
               serialize.ts (writes a scene back to .vox), writer.ts (test files), empty.ts
               (new scenes), renderSettings.ts (file settings → app settings)
@@ -175,7 +175,7 @@ rust/         native wgpu renderer and farm worker (vox, scene, materials, hdr, 
 test-scenes/  one small scene per feature being matched
 ```
 
-**Rendering:** progressive path tracing, one sample per pixel per pass, accumulated and then tone mapped. Rays skip empty space using an 8×8×8 "brick" occupancy grid, then step voxel by voxel inside occupied bricks. Direct light (sun or HDR sky) is traced through a single shadow-ray call in the shader, which keeps GPU compile times short. The renderer only needs a `GPUDevice`, so the same code runs in the browser and headless.
+**Rendering:** progressive path tracing, one sample per pixel per pass, accumulated and then tone mapped. The scene is stored sparsely (`src/vox/grid.ts`): its box is split into 8×8×8 bricks and only bricks with voxels take memory, so the 1.3-million-voxel city is about 3 MB instead of 38 MB, and scenes can be up to 16,384 voxels on a side. Rays skip empty bricks, then step voxel by voxel inside occupied ones. Direct light (sun or HDR sky) is traced through a single shadow-ray call in the shader, which keeps GPU compile times short. The renderer only needs a `GPUDevice`, so the same code runs in the browser and headless.
 
 **Denoising:** on by default (Image panel → Denoise). The path tracer also records what each pixel's camera ray first hits (colour, surface direction, depth); an edge-aware à-trous filter (`src/render/shaders/denoise.wgsl.ts`) smooths the noise in the lighting without crossing voxel edges, then puts the colours back. It estimates each pixel's noise from its own samples, so it fades out as a frame converges. At 4 samples per pixel the result is closer to a 1,024-sample reference than 16 raw samples are, so farm frames can use far fewer samples. Browser, Node and Rust renderers run the same shader. Volumes (fog, clouds) have no surface to guide it, so they clean up less.
 
@@ -207,7 +207,7 @@ Declared settings get UI controls automatically, and changing them restarts the 
 - **Camera:** import and export MagicaVoxel-Animation-Script camera files; roll and focus keys.
 - **Look:** calibrate the items listed above against MagicaVoxel renders; fog and subsurface media; edges and grid.
 - **Magic Prism farm:** job queue page, pause/resume, per-worker GPU info, resuming jobs after a coordinator restart.
-- **Big scenes:** sparse bricks instead of the dense grid; streaming.
+- **Big scenes:** streaming bricks in and out for scenes bigger than GPU memory; a coarser brick level for very wide, sparse scenes.
 
 
 ## Licence

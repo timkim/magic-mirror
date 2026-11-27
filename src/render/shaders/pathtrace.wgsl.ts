@@ -37,7 +37,9 @@ struct Material {
 };
 
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var voxels: texture_3d<u32>;
+// The scene is a sparse grid (src/vox/grid.ts): bricks holds one u32 per 8×8×8 brick (0 = empty,
+// else 1 + its slot); pool holds 512 palette indices per slot, four per u32, x fastest.
+@group(0) @binding(1) var<storage, read> pool: array<u32>;
 @group(0) @binding(2) var bricks: texture_3d<u32>;
 @group(0) @binding(3) var<storage, read> mats: array<Material, 256>;
 @group(0) @binding(4) var<storage, read_write> accum: array<vec4f>;
@@ -107,7 +109,14 @@ fn safeInv(d: vec3f) -> vec3f {
   return 1.0 / select(d, vec3f(1e-9), abs(d) < vec3f(1e-9));
 }
 
-fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd: f32, n0: vec3f, inside: u32) -> Hit {
+// Palette index of a voxel in a brick slot (slot 0 = empty brick); l is the voxel within the brick.
+fn brickVoxel(slot: u32, l: vec3i) -> u32 {
+  if (slot == 0u) { return 0u; }
+  let i = (slot - 1u) * 512u + u32(l.x | (l.y << 3u) | (l.z << 6u));
+  return (pool[i >> 2u] >> ((i & 3u) * 8u)) & 0xFFu;
+}
+
+fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, slot: u32, tStart: f32, tEnd: f32, n0: vec3f, inside: u32) -> Hit {
   var h: Hit; h.hit = false;
   let lo = bcell * BRICK;
   let hi = min(lo + vec3i(BRICK), vec3i(P.dims.xyz)) - vec3i(1);
@@ -120,7 +129,7 @@ fn traceBrick(ro: vec3f, rd: vec3f, inv: vec3f, bcell: vec3i, tStart: f32, tEnd:
   var n = n0;
   for (var i = 0; i < 32; i++) {
     if (any(v < lo) || any(v > hi) || t > tEnd) { break; }
-    let id = textureLoad(voxels, v, 0).r;
+    let id = brickVoxel(slot, v - lo);
     if (id != inside) { h.hit = true; h.t = t; h.n = n; h.id = id; return h; }
     if (tNext.x < tNext.y && tNext.x < tNext.z) { v.x += st.x; t = tNext.x; tNext.x += tDelta.x; n = vec3f(-stepf.x, 0.0, 0.0); }
     else if (tNext.y < tNext.z) { v.y += st.y; t = tNext.y; tNext.y += tDelta.y; n = vec3f(0.0, -stepf.y, 0.0); }
@@ -159,8 +168,9 @@ fn traceGrid(ro: vec3f, rd: vec3f, tLimit: f32, inside: u32) -> Hit {
     if (any(cell < vec3i(0)) || any(cell >= bdims) || t > tExit || t > tLimit) { break; }
     let tCellExit = min(min(tNext.x, tNext.y), tNext.z);
     // Inside glass every brick must be walked: an empty brick is where the glass ends.
-    if (inside != 0u || textureLoad(bricks, cell, 0).r != 0u) {
-      let r = traceBrick(ro, rd, inv, cell, t, min(tCellExit, tExit), n, inside);
+    let slot = textureLoad(bricks, cell, 0).r;
+    if (inside != 0u || slot != 0u) {
+      let r = traceBrick(ro, rd, inv, cell, slot, t, min(tCellExit, tExit), n, inside);
       if (r.hit && r.t < tLimit) { return r; }
     }
     if (tNext.x < tNext.y && tNext.x < tNext.z) { cell.x += st.x; t = tNext.x; tNext.x += tDelta.x; n = vec3f(-stepf.x, 0.0, 0.0); }

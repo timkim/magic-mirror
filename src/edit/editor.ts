@@ -413,8 +413,7 @@ export class VoxelEditor {
     if (e.altKey) {
       // Eyedropper.
       if (hit && !hit.ground) {
-        const g = this.host.grid, o = g.origin;
-        const c = g.cells[hit.cell[0] - o[0] + g.dims[0] * (hit.cell[1] - o[1] + g.dims[1] * (hit.cell[2] - o[2]))];
+        const c = this.host.grid.getWorld(...hit.cell);
         if (c) this.color.set(c);
       }
       return true;

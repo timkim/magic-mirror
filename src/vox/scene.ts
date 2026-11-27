@@ -2,6 +2,7 @@
 
 import type { Rot3, SceneNode, VoxFile } from './types';
 import { IDENTITY_ROT } from './parser';
+import { SparseGrid } from './grid';
 
 export interface PlacedModel {
   modelId: number;
@@ -12,14 +13,8 @@ export interface PlacedModel {
   nodeId?: number;
 }
 
-export interface VoxelGrid {
-  /** World coordinate of grid cell (0,0,0). */
-  origin: [number, number, number];
-  dims: [number, number, number];
-  /** One byte per cell: palette index, 0 = empty. Index = x + dims.x * (y + dims.y * z). */
-  cells: Uint8Array;
-  voxelCount: number;
-}
+/** The baked scene: a sparse grid of palette indices (see grid.ts). */
+export type VoxelGrid = SparseGrid;
 
 function mulRot(a: Rot3, b: Rot3): Rot3 {
   const o = [0, 0, 0, 0, 0, 0, 0, 0, 0] as Rot3;
@@ -104,39 +99,23 @@ export function placeModels(file: VoxFile, time = 0): PlacedModel[] {
  * A voxel v of a model lands at R * (v - floor(size / 2)) + T  (MagicaVoxel's pivot rule).
  * TODO(match): confirm the off-by-one for rotated even-sized models against MagicaVoxel renders.
  */
-export function buildVoxelGrid(file: VoxFile, time = 0, maxCells = 1024 ** 3): VoxelGrid {
+export function buildVoxelGrid(file: VoxFile, time = 0): VoxelGrid {
   const placed = placeModels(file, time);
+  if (placed.length === 0) return new SparseGrid([0, 0, 0], [1, 1, 1]);
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-  const transformVoxel = (p: PlacedModel, x: number, y: number, z: number) => {
-    const s = file.models[p.modelId].size;
-    const w = applyRot(p.rotation, [x - Math.floor(s[0] / 2), y - Math.floor(s[1] / 2), z - Math.floor(s[2] / 2)]);
-    return [w[0] + p.translation[0], w[1] + p.translation[1], w[2] + p.translation[2]];
-  };
-  // Bounds from each model's 8 corners.
   for (const p of placed) {
-    const s = file.models[p.modelId].size;
-    for (const cx of [0, s[0] - 1]) for (const cy of [0, s[1] - 1]) for (const cz of [0, s[2] - 1]) {
-      const w = transformVoxel(p, cx, cy, cz);
-      for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], w[i]); hi[i] = Math.max(hi[i], w[i]); }
-    }
+    const b = placementBounds(file, p);
+    for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], b.lo[i]); hi[i] = Math.max(hi[i], b.hi[i]); }
   }
-  if (placed.length === 0) return { origin: [0, 0, 0], dims: [1, 1, 1], cells: new Uint8Array(1), voxelCount: 0 };
-
-  const dims: [number, number, number] = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
-  const total = dims[0] * dims[1] * dims[2];
-  if (total > maxCells) throw new Error(`Scene bounds ${dims.join('×')} are too large for the dense grid (sparse bricks are planned).`);
-  const cells = new Uint8Array(total);
-  let count = 0;
+  const grid = new SparseGrid([lo[0], lo[1], lo[2]], [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1]);
   for (const p of placed) {
     const v = file.models[p.modelId].voxels;
     for (let i = 0; i < v.length; i += 4) {
-      const w = transformVoxel(p, v[i], v[i + 1], v[i + 2]);
-      const idx = (w[0] - lo[0]) + dims[0] * ((w[1] - lo[1]) + dims[1] * (w[2] - lo[2]));
-      if (cells[idx] === 0) count++;
-      cells[idx] = v[i + 3];
+      const w = transformVoxel(file, p, v[i], v[i + 1], v[i + 2]);
+      grid.set(w[0] - lo[0], w[1] - lo[1], w[2] - lo[2], v[i + 3]);
     }
   }
-  return { origin: [lo[0], lo[1], lo[2]], dims, cells, voxelCount: count };
+  return grid;
 }
 
 /** Highest keyframe number in the scene, for animation timelines. */
@@ -186,7 +165,7 @@ export class SceneBaker {
   private placed: PlacedModel[];
   time: number;
 
-  constructor(private file: VoxFile, time = 0, maxCells = 1024 ** 3) {
+  constructor(private file: VoxFile, time = 0) {
     this.length = animationLength(file);
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     for (let t = 0; t <= this.length; t++)
@@ -196,8 +175,7 @@ export class SceneBaker {
       }
     if (!Number.isFinite(lo[0])) { lo.fill(0); hi.fill(0); }
     const dims: [number, number, number] = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
-    if (dims[0] * dims[1] * dims[2] > maxCells) throw new Error(`Scene bounds ${dims.join('×')} are too large for the dense grid.`);
-    this.grid = { origin: [lo[0], lo[1], lo[2]], dims, cells: new Uint8Array(dims[0] * dims[1] * dims[2]), voxelCount: 0 };
+    this.grid = new SparseGrid([lo[0], lo[1], lo[2]], dims);
     this.time = time;
     this.placed = placeModels(file, time);
     this.rebuild([{ min: [0, 0, 0], max: [dims[0] - 1, dims[1] - 1, dims[2] - 1] }]);
@@ -225,7 +203,7 @@ export class SceneBaker {
     this.time = time;
     // Many scattered changes: one full rebuild is cheaper than many small ones.
     const volume = boxes.reduce((n, b) => n + (b.max[0] - b.min[0] + 1) * (b.max[1] - b.min[1] + 1) * (b.max[2] - b.min[2] + 1), 0);
-    if (volume > g.cells.length / 3) boxes = [{ min: [0, 0, 0], max: [g.dims[0] - 1, g.dims[1] - 1, g.dims[2] - 1] }];
+    if (volume > (g.dims[0] * g.dims[1] * g.dims[2]) / 3) boxes = [{ min: [0, 0, 0], max: [g.dims[0] - 1, g.dims[1] - 1, g.dims[2] - 1] }];
     this.rebuild(boxes);
     return boxes;
   }
@@ -258,16 +236,9 @@ export class SceneBaker {
 
   /** Clear each box and stamp every model that touches it (in scene order, like a full build). */
   private rebuild(boxes: GridBox[]) {
-    const g = this.grid, [dx, dy] = g.dims, o = g.origin;
+    const g = this.grid, o = g.origin;
     for (const b of boxes) {
-      for (let z = b.min[2]; z <= b.max[2]; z++)
-        for (let y = b.min[1]; y <= b.max[1]; y++) {
-          const row = dx * (y + dy * z);
-          for (let x = b.min[0]; x <= b.max[0]; x++) {
-            if (g.cells[row + x]) g.voxelCount--;
-            g.cells[row + x] = 0;
-          }
-        }
+      g.clearBox(b.min, b.max);
       for (const p of this.placed) {
         const pb = placementBounds(this.file, p);
         let touches = true;
@@ -278,9 +249,7 @@ export class SceneBaker {
           const w = transformVoxel(this.file, p, v[i], v[i + 1], v[i + 2]);
           const x = w[0] - o[0], y = w[1] - o[1], z = w[2] - o[2];
           if (x < b.min[0] || x > b.max[0] || y < b.min[1] || y > b.max[1] || z < b.min[2] || z > b.max[2]) continue;
-          const idx = x + dx * (y + dy * z);
-          if (g.cells[idx] === 0) g.voxelCount++;
-          g.cells[idx] = v[i + 3];
+          g.set(x, y, z, v[i + 3]);
         }
       }
     }

@@ -68,7 +68,6 @@ export interface FrameParams {
   maxBounces: number;
 }
 
-const BRICK = 8;
 const PARAMS_BYTES = 18 * 16;
 
 export class Renderer {
@@ -83,7 +82,8 @@ export class Renderer {
   private bloomUniforms: GPUBuffer[];
   private materials: GPUBuffer;
   private sampler: GPUSampler;
-  private voxelTex: GPUTexture | null = null;
+  /** Voxel bricks (512 bytes each) and the brick map pointing into them; see vox/grid.ts. */
+  private pool: GPUBuffer | null = null;
   private brickTex: GPUTexture | null = null;
   private envTex: GPUTexture;
   private envTable: GPUBuffer;
@@ -110,7 +110,6 @@ export class Renderer {
   private renderId = 0;
   static readonly DENOISE_PASSES = 5;
   private grid: VoxelGrid | null = null;
-  private bricks: Uint8Array | null = null;
   private frame: FrameParams | null = null;
   private staging: GPUBuffer[] = [];
   hasEnvironment = false;
@@ -176,27 +175,14 @@ export class Renderer {
   setScene(grid: VoxelGrid, palette: Uint8Array, materials: Map<number, VoxDict>) {
     const d = this.device;
     const max = d.limits.maxTextureDimension3D;
-    if (grid.dims.some((n) => n > max)) throw new Error(`Scene is ${grid.dims.join('×')} voxels; this GPU allows ${max} per axis.`);
-    this.voxelTex?.destroy();
+    if (grid.bdims.some((n) => n > max)) throw new Error(`Scene is ${grid.dims.join('×')} voxels; this GPU allows ${max * 8} per axis.`);
     this.brickTex?.destroy();
     this.grid = grid;
-
-    const [dx, dy, dz] = grid.dims;
-    this.voxelTex = d.createTexture({ size: [dx, dy, dz], dimension: '3d', format: 'r8uint', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    d.queue.writeTexture({ texture: this.voxelTex }, grid.cells as Uint8Array<ArrayBuffer>, { bytesPerRow: dx, rowsPerImage: dy }, [dx, dy, dz]);
-
-    const bx = Math.ceil(dx / BRICK), by = Math.ceil(dy / BRICK), bz = Math.ceil(dz / BRICK);
-    const bricks = new Uint8Array(bx * by * bz);
-    for (let z = 0; z < dz; z++)
-      for (let y = 0; y < dy; y++) {
-        const row = dx * (y + dy * z);
-        const brow = bx * ((y >> 3) + by * (z >> 3));
-        for (let x = 0; x < dx; x++) if (grid.cells[row + x]) bricks[brow + (x >> 3)] = 1;
-      }
-    this.bricks = bricks;
-    this.brickTex = d.createTexture({ size: [bx, by, bz], dimension: '3d', format: 'r8uint', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    d.queue.writeTexture({ texture: this.brickTex }, bricks, { bytesPerRow: bx, rowsPerImage: by }, [bx, by, bz]);
-
+    const [bx, by, bz] = grid.bdims;
+    // The brick map: one u32 per brick, 0 = empty, else 1 + its slot in the pool.
+    this.brickTex = d.createTexture({ size: [bx, by, bz], dimension: '3d', format: 'r32uint', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    d.queue.writeTexture({ texture: this.brickTex }, grid.map as Uint32Array<ArrayBuffer>, { bytesPerRow: bx * 4, rowsPerImage: by }, [bx, by, bz]);
+    this.uploadPool(true);
     d.queue.writeBuffer(this.materials, 0, buildMaterialTable(palette, materials) as Float32Array<ArrayBuffer>);
     this.rebind();
     this.reset();
@@ -208,48 +194,55 @@ export class Renderer {
     this.reset();
   }
 
+  /** Make sure the GPU pool holds every slot; grows (and rebinds) when the grid outgrew it. */
+  private uploadPool(all: boolean, slots?: Iterable<number>) {
+    const g = this.grid!, d = this.device;
+    const need = Math.max(1, g.slots) * 512;
+    if (!this.pool || this.pool.size < need) {
+      this.pool?.destroy();
+      // Room to grow, so editing doesn't reallocate on every new brick.
+      const size = Math.min(d.limits.maxStorageBufferBindingSize, Math.max(need * 1.5, 1 << 20));
+      if (size < need) throw new Error(`This scene needs ${Math.round(need / 1048576)} MB of voxel bricks; this GPU allows ${Math.round(d.limits.maxStorageBufferBindingSize / 1048576)} MB.`);
+      this.pool = d.createBuffer({ label: 'voxel bricks', size: Math.ceil(size / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      all = true;
+      if (this.brickTex) this.rebind();
+    }
+    if (all) {
+      d.queue.writeBuffer(this.pool, 0, g.pool.buffer as ArrayBuffer, g.pool.byteOffset, Math.ceil(need / 4) * 4);
+      return;
+    }
+    for (const slot of slots ?? []) d.queue.writeBuffer(this.pool, slot * 512, g.pool.buffer as ArrayBuffer, g.pool.byteOffset + slot * 512, 512);
+  }
+
   /**
    * Re-upload only the changed parts of the grid set with setScene (same grid object,
-   * e.g. after SceneBaker.setTime). Much faster than setScene for animation.
+   * e.g. after SceneBaker.setTime or an edit). Much faster than setScene for animation.
    */
   updateRegions(boxes: GridBox[]) {
     const g = this.grid, d = this.device;
-    if (!g || !this.voxelTex || !this.brickTex || !this.bricks || boxes.length === 0) return;
-    const [dx, dy] = g.dims;
-    const bx = Math.ceil(g.dims[0] / BRICK), by = Math.ceil(g.dims[1] / BRICK);
+    if (!g || !this.brickTex || boxes.length === 0) return;
+    const [bx, by] = g.bdims;
+    const grew = !this.pool || this.pool.size < g.slots * 512;
+    if (grew) this.uploadPool(true);
     for (const b of boxes) {
-      const sx = b.max[0] - b.min[0] + 1, sy = b.max[1] - b.min[1] + 1, sz = b.max[2] - b.min[2] + 1;
-      const sub = new Uint8Array(sx * sy * sz);
-      for (let z = 0; z < sz; z++)
-        for (let y = 0; y < sy; y++) {
-          const src = b.min[0] + dx * (b.min[1] + y + dy * (b.min[2] + z));
-          sub.set(g.cells.subarray(src, src + sx), sx * (y + sy * z));
+      const lo = b.min.map((v) => Math.max(0, v >> 3)), hi = b.max.map((v, i) => Math.min(g.bdims[i] - 1, v >> 3));
+      const sx = hi[0] - lo[0] + 1, sy = hi[1] - lo[1] + 1, sz = hi[2] - lo[2] + 1;
+      if (sx <= 0 || sy <= 0 || sz <= 0) continue;
+      const sub = new Uint32Array(sx * sy * sz);
+      const slots: number[] = [];
+      for (let k = 0; k < sz; k++)
+        for (let j = 0; j < sy; j++) {
+          const src = lo[0] + bx * (lo[1] + j + by * (lo[2] + k));
+          const row = g.map.subarray(src, src + sx);
+          sub.set(row, sx * (j + sy * k));
+          for (const m of row) if (m) slots.push(m - 1);
         }
-      d.queue.writeTexture({ texture: this.voxelTex, origin: b.min }, sub, { bytesPerRow: sx, rowsPerImage: sy }, [sx, sy, sz]);
-
-      // Recompute the bricks this box touches.
-      const lo = b.min.map((v) => v >> 3), hi = b.max.map((v) => v >> 3);
-      const bsx = hi[0] - lo[0] + 1, bsy = hi[1] - lo[1] + 1, bsz = hi[2] - lo[2] + 1;
-      const bsub = new Uint8Array(bsx * bsy * bsz);
-      for (let k = lo[2]; k <= hi[2]; k++)
-        for (let j = lo[1]; j <= hi[1]; j++)
-          for (let i = lo[0]; i <= hi[0]; i++) {
-            let occ = 0;
-            for (let z = k * BRICK; z < Math.min((k + 1) * BRICK, g.dims[2]) && !occ; z++)
-              for (let y = j * BRICK; y < Math.min((j + 1) * BRICK, dy) && !occ; y++) {
-                const row = dx * (y + dy * z);
-                for (let x = i * BRICK; x < Math.min((i + 1) * BRICK, dx); x++) if (g.cells[row + x]) { occ = 1; break; }
-              }
-            this.bricks[i + bx * (j + by * k)] = occ;
-            bsub[(i - lo[0]) + bsx * ((j - lo[1]) + bsy * (k - lo[2]))] = occ;
-          }
-      d.queue.writeTexture({ texture: this.brickTex, origin: lo as [number, number, number] }, bsub, { bytesPerRow: bsx, rowsPerImage: bsy }, [bsx, bsy, bsz]);
-      this.reset();
+      d.queue.writeTexture({ texture: this.brickTex, origin: lo as [number, number, number] }, sub, { bytesPerRow: sx * 4, rowsPerImage: sy }, [sx, sy, sz]);
+      if (!grew) this.uploadPool(false, slots);
     }
     this.reset();
   }
 
-  /** Equirectangular HDR environment (RGBA half floats + sampling table), or null to clear it. */
   setEnvironment(env: { width: number; height: number; data: Uint16Array; sampling?: { width: number; height: number; table: Float32Array } } | null) {
     this.envTex.destroy();
     this.envTable.destroy();
@@ -312,13 +305,13 @@ export class Renderer {
   }
 
   private rebind() {
-    if (!this.voxelTex || !this.brickTex || !this.accum || !this.bloomA || !this.bloomB || !this.feat || !this.pingA || !this.pingB) return;
+    if (!this.pool || !this.brickTex || !this.accum || !this.bloomA || !this.bloomB || !this.feat || !this.pingA || !this.pingB) return;
     const d = this.device;
     this.traceGroup = d.createBindGroup({
       layout: this.tracePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.params } },
-        { binding: 1, resource: this.voxelTex.createView() },
+        { binding: 1, resource: { buffer: this.pool } },
         { binding: 2, resource: this.brickTex.createView() },
         { binding: 3, resource: { buffer: this.materials } },
         { binding: 4, resource: { buffer: this.accum } },

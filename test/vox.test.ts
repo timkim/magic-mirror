@@ -49,8 +49,7 @@ describe('parse + scene', () => {
 
   it('bakes world voxels with the floor(size/2) pivot and rotation', () => {
     const g = buildVoxelGrid(file);
-    const at = (x: number, y: number, z: number) =>
-      g.cells[(x - g.origin[0]) + g.dims[0] * ((y - g.origin[1]) + g.dims[1] * (z - g.origin[2]))];
+    const at = (x: number, y: number, z: number) => g.getWorld(x, y, z);
     // Model a: voxel (0,0,0) - pivot (1,1,1) + (10,0,1) = (9,-1,0)
     expect(at(9, -1, 0)).toBe(3);
     expect(at(10, 0, 1)).toBe(5);
@@ -83,7 +82,7 @@ describe('SceneBaker', () => {
     for (const t of [3, 15, 29, 0]) {
       const dirty = baker.setTime(t);
       const fresh = new SceneBaker(file, t);
-      expect(Buffer.compare(Buffer.from(baker.grid.cells), Buffer.from(fresh.grid.cells))).toBe(0);
+      expect(Buffer.compare(Buffer.from(baker.grid.toDense()), Buffer.from(fresh.grid.toDense()))).toBe(0);
       expect(baker.grid.voxelCount).toBe(fresh.grid.voxelCount);
       expect(Array.isArray(dirty)).toBe(true);
     }

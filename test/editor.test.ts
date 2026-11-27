@@ -31,7 +31,7 @@ describe('VoxelEditor', () => {
     expect(editor.setVoxels(0, [[1, 1, 1, 9], [2, 2, 2, 9], [0, 0, 0, 0]], 'test')).toBe(3);
     const full = buildVoxelGrid(file);
     expect(baker().grid.voxelCount).toBe(3);
-    expect(Array.from(baker().grid.cells).filter(Boolean).length).toBe(full.voxelCount);
+    expect(Array.from(baker().grid.toDense()).filter(Boolean).length).toBe(full.voxelCount);
     history.undo();
     expect(baker().grid.voxelCount).toBe(2);
     history.redo();
@@ -41,7 +41,7 @@ describe('VoxelEditor', () => {
   it('finds the owning model of a voxel through its rotation', () => {
     const { editor, baker } = setup();
     const g = baker().grid;
-    const i = g.cells.findIndex(Boolean);
+    const i = g.toDense().findIndex(Boolean);
     const cx = (i % g.dims[0]) + g.origin[0], cy = Math.floor(i / g.dims[0]) % g.dims[1] + g.origin[1];
     const hit = castRay(g, [cx + 0.5, cy + 0.5, 100], [0, 0, -1]);
     expect(hit && !hit.ground).toBe(true);
@@ -66,7 +66,7 @@ describe('VoxelEditor', () => {
   it('moves, rotates and resizes objects in place, and edits layers', () => {
     const { file, history, editor, baker } = setup();
     const node = baker().placements[0].nodeId!;
-    const world = () => { const g = baker().grid, out: string[] = []; g.cells.forEach((c, i) => { if (c) out.push([i % g.dims[0] + g.origin[0], Math.floor(i / g.dims[0]) % g.dims[1] + g.origin[1], Math.floor(i / (g.dims[0] * g.dims[1])) + g.origin[2]].join(',')); }); return out.sort(); };
+    const world = () => { const g = baker().grid, out: string[] = []; g.toDense().forEach((c, i) => { if (c) out.push([i % g.dims[0] + g.origin[0], Math.floor(i / g.dims[0]) % g.dims[1] + g.origin[1], Math.floor(i / (g.dims[0] * g.dims[1])) + g.origin[2]].join(',')); }); return out.sort(); };
     const before = world();
 
     editor.moveObject(node, [3, -2, 1]);

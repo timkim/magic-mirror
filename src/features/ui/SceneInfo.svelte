@@ -17,6 +17,7 @@
       ['Models', `${s.file.models.length} (${placed.length} placed)`],
       ['Voxels', s.grid.voxelCount.toLocaleString()],
       ['Bounds', s.grid.dims.join(' × ')],
+      ['Storage', `${((s.grid.bricksUsed * 512 + s.grid.map.length * 4) / 1048576).toFixed(1)} MB (${s.grid.bricksUsed.toLocaleString()} bricks)`],
       ['Materials', String(s.file.materials.size)],
       ['Animation', len ? `${len + 1} frames` : 'static'],
     ];

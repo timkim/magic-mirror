@@ -67,7 +67,7 @@ export function castRay(grid: VoxelGrid, origin: Vec3, dir: Vec3, ground = true)
     const tDelta = dir.map((d) => (Math.abs(d) < 1e-12 ? Infinity : Math.abs(1 / d)));
     let axis = enterAxis, t = t0;
     for (let guard = 0; guard < n[0] + n[1] + n[2] + 3; guard++) {
-      if (grid.cells[c[0] + n[0] * (c[1] + n[1] * c[2])]) {
+      if (grid.get(c[0], c[1], c[2])) {
         const normal: [number, number, number] = [0, 0, 0];
         if (axis >= 0) normal[axis] = -step[axis];
         else normal[2] = 1; // camera inside the grid

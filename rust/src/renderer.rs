@@ -11,7 +11,6 @@ const PRESENT: &str = include_str!(concat!(env!("OUT_DIR"), "/present.wgsl"));
 const BLOOM: &str = include_str!(concat!(env!("OUT_DIR"), "/bloom.wgsl"));
 const DENOISE: &str = include_str!(concat!(env!("OUT_DIR"), "/denoise.wgsl"));
 const DENOISE_PASSES: usize = 5;
-const BRICK: usize = 8;
 const PARAMS_BYTES: u64 = 18 * 16;
 
 pub struct Renderer {
@@ -27,9 +26,9 @@ pub struct Renderer {
     bloom_uniforms: [wgpu::Buffer; 3],
     materials: wgpu::Buffer,
     sampler: wgpu::Sampler,
-    voxel_tex: Option<wgpu::Texture>,
+    /// Voxel bricks and the brick map pointing into them (see scene::Grid).
+    pool: Option<wgpu::Buffer>,
     brick_tex: Option<wgpu::Texture>,
-    bricks: Vec<u8>,
     env_tex: wgpu::Texture,
     env_table: wgpu::Buffer,
     env_sample: [u32; 2],
@@ -185,9 +184,8 @@ impl Renderer {
             bloom_uniforms,
             materials,
             sampler,
-            voxel_tex: None,
+            pool: None,
             brick_tex: None,
-            bricks: vec![],
             env_sample: [0, 0],
             accum: None,
             feat: None,
@@ -231,20 +229,8 @@ impl Renderer {
         t
     }
 
-    fn texture_3d(&self, label: &str, size: [usize; 3]) -> wgpu::Texture {
-        self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d { width: size[0] as u32, height: size[1] as u32, depth_or_array_layers: size[2] as u32 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        })
-    }
-
-    fn write_3d(&self, tex: &wgpu::Texture, origin: [usize; 3], size: [usize; 3], data: &[u8]) {
+    /// Upload `data` (u32 per brick) into a sub-box of the brick map texture.
+    fn write_map(&self, tex: &wgpu::Texture, origin: [usize; 3], size: [usize; 3], data: &[u32]) {
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: tex,
@@ -252,38 +238,58 @@ impl Renderer {
                 origin: wgpu::Origin3d { x: origin[0] as u32, y: origin[1] as u32, z: origin[2] as u32 },
                 aspect: wgpu::TextureAspect::All,
             },
-            data,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] as u32), rows_per_image: Some(size[1] as u32) },
+            bytemuck::cast_slice(data),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] as u32 * 4), rows_per_image: Some(size[1] as u32) },
             wgpu::Extent3d { width: size[0] as u32, height: size[1] as u32, depth_or_array_layers: size[2] as u32 },
         );
     }
 
+    /// Make the GPU brick pool big enough for the grid (reallocating with room to grow) and
+    /// upload either everything or just the given slots.
+    fn upload_pool(&mut self, grid: &Grid, all: bool, slots: &[usize]) {
+        let need = (grid.slots().max(1) * 512) as u64;
+        let mut all = all;
+        if self.pool.as_ref().is_none_or(|p| p.size() < need) {
+            let size = (need * 3 / 2).max(1 << 20).div_ceil(4) * 4;
+            self.pool = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("voxel bricks"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            all = true;
+        }
+        let pool = self.pool.as_ref().unwrap();
+        if all {
+            if !grid.pool.is_empty() {
+                self.queue.write_buffer(pool, 0, &grid.pool);
+            }
+            return;
+        }
+        for &slot in slots {
+            self.queue.write_buffer(pool, (slot * 512) as u64, &grid.pool[slot * 512..(slot + 1) * 512]);
+        }
+    }
+
     pub fn set_scene(&mut self, grid: &Grid, materials: &[f32]) -> Result<(), String> {
         let max = self.device.limits().max_texture_dimension_3d as usize;
-        if grid.dims.iter().any(|&n| n > max) {
-            return Err(format!("scene is {:?} voxels; this GPU allows {max} per axis", grid.dims));
+        if grid.bdims.iter().any(|&n| n > max) {
+            return Err(format!("scene is {:?} voxels; this GPU allows {} per axis", grid.dims, max * 8));
         }
-        let [dx, dy, dz] = grid.dims;
-        let vt = self.texture_3d("voxels", grid.dims);
-        self.write_3d(&vt, [0; 3], grid.dims, &grid.cells);
-        let (bx, by, bz) = (dx.div_ceil(BRICK), dy.div_ceil(BRICK), dz.div_ceil(BRICK));
-        let mut bricks = vec![0u8; bx * by * bz];
-        for z in 0..dz {
-            for y in 0..dy {
-                let row = dx * (y + dy * z);
-                let brow = bx * ((y >> 3) + by * (z >> 3));
-                for x in 0..dx {
-                    if grid.cells[row + x] != 0 {
-                        bricks[brow + (x >> 3)] = 1;
-                    }
-                }
-            }
-        }
-        let bt = self.texture_3d("bricks", [bx, by, bz]);
-        self.write_3d(&bt, [0; 3], [bx, by, bz], &bricks);
-        self.voxel_tex = Some(vt);
+        let [bx, by, bz] = grid.bdims;
+        let bt = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("brick map"),
+            size: wgpu::Extent3d { width: bx as u32, height: by as u32, depth_or_array_layers: bz as u32 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.write_map(&bt, [0; 3], grid.bdims, &grid.map);
         self.brick_tex = Some(bt);
-        self.bricks = bricks;
+        self.upload_pool(grid, true, &[]);
         self.grid_origin = grid.origin;
         self.grid_dims = grid.dims;
         self.queue.write_buffer(&self.materials, 0, bytemuck::cast_slice(materials));
@@ -291,51 +297,36 @@ impl Renderer {
         Ok(())
     }
 
-    /// Re-upload only the changed regions of the grid passed to set_scene.
+    /// Re-upload only the bricks inside the changed regions of the grid passed to set_scene.
     pub fn update_regions(&mut self, grid: &Grid, boxes: &[GridBox]) {
-        let (Some(vt), Some(bt)) = (&self.voxel_tex, &self.brick_tex) else { return };
-        let [dx, dy, dz] = grid.dims;
-        let (bx, by) = (dx.div_ceil(BRICK), dy.div_ceil(BRICK));
+        if self.brick_tex.is_none() || boxes.is_empty() {
+            return;
+        }
+        let grew = self.pool.as_ref().is_none_or(|p| p.size() < (grid.slots() * 512) as u64);
+        if grew {
+            self.upload_pool(grid, true, &[]);
+        }
+        let [bx, by, _] = grid.bdims;
         for b in boxes {
-            let size = [0, 1, 2].map(|i| b.max[i] - b.min[i] + 1);
-            let mut sub = vec![0u8; size[0] * size[1] * size[2]];
-            for z in 0..size[2] {
-                for y in 0..size[1] {
-                    let src = b.min[0] + dx * (b.min[1] + y + dy * (b.min[2] + z));
-                    let dst = size[0] * (y + size[1] * z);
-                    sub[dst..dst + size[0]].copy_from_slice(&grid.cells[src..src + size[0]]);
-                }
-            }
-            self.write_3d(vt, b.min, size, &sub);
             let lo = b.min.map(|v| v >> 3);
-            let hi = b.max.map(|v| v >> 3);
+            let hi = [0, 1, 2].map(|i| (b.max[i] >> 3).min(grid.bdims[i] - 1));
             let bs = [0, 1, 2].map(|i| hi[i] - lo[i] + 1);
-            let mut bsub = vec![0u8; bs[0] * bs[1] * bs[2]];
-            for k in lo[2]..=hi[2] {
-                for j in lo[1]..=hi[1] {
-                    for i in lo[0]..=hi[0] {
-                        let mut occ = 0u8;
-                        'scan: for z in k * BRICK..((k + 1) * BRICK).min(dz) {
-                            for y in j * BRICK..((j + 1) * BRICK).min(dy) {
-                                let row = dx * (y + dy * z);
-                                for x in i * BRICK..((i + 1) * BRICK).min(dx) {
-                                    if grid.cells[row + x] != 0 {
-                                        occ = 1;
-                                        break 'scan;
-                                    }
-                                }
-                            }
-                        }
-                        self.bricks[i + bx * (j + by * k)] = occ;
-                        bsub[(i - lo[0]) + bs[0] * ((j - lo[1]) + bs[1] * (k - lo[2]))] = occ;
-                    }
+            let mut sub = vec![0u32; bs[0] * bs[1] * bs[2]];
+            let mut slots = vec![];
+            for k in 0..bs[2] {
+                for j in 0..bs[1] {
+                    let src = lo[0] + bx * (lo[1] + j + by * (lo[2] + k));
+                    let row = &grid.map[src..src + bs[0]];
+                    sub[bs[0] * (j + bs[1] * k)..][..bs[0]].copy_from_slice(row);
+                    slots.extend(row.iter().filter(|&&m| m != 0).map(|&m| m as usize - 1));
                 }
             }
-            self.write_3d(bt, lo, bs, &bsub);
+            self.write_map(self.brick_tex.as_ref().unwrap(), lo, bs, &sub);
+            if !grew {
+                self.upload_pool(grid, false, &slots);
+            }
         }
-        if !boxes.is_empty() {
-            self.samples = 0;
-        }
+        self.samples = 0;
     }
 
     pub fn set_environment(&mut self, env: &Environment) {
@@ -428,7 +419,7 @@ impl Renderer {
             layout: &self.trace.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.voxel_tex.as_ref().unwrap().create_view(&Default::default())) },
+                wgpu::BindGroupEntry { binding: 1, resource: self.pool.as_ref().unwrap().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.brick_tex.as_ref().unwrap().create_view(&Default::default())) },
                 wgpu::BindGroupEntry { binding: 3, resource: self.materials.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: self.accum.as_ref().unwrap().as_entire_binding() },

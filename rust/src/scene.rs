@@ -9,12 +9,133 @@ pub struct Placed {
     pub translation: [i32; 3],
 }
 
+/// A sparse voxel grid, the same layout as src/vox/grid.ts: `map` has one entry per 8×8×8
+/// brick (0 = empty, else 1 + its slot), `pool` 512 palette indices per slot (x fastest).
 pub struct Grid {
     pub origin: [i32; 3],
     pub dims: [usize; 3],
-    /// Palette index per cell, x fastest.
-    pub cells: Vec<u8>,
+    pub bdims: [usize; 3],
+    pub map: Vec<u32>,
+    pub pool: Vec<u8>,
     pub voxel_count: usize,
+    counts: Vec<u16>,
+    free: Vec<u32>,
+}
+
+impl Grid {
+    pub fn new(origin: [i32; 3], dims: [usize; 3]) -> Result<Self, String> {
+        let bdims = dims.map(|d| d.div_ceil(8).max(1));
+        let n = bdims[0] * bdims[1] * bdims[2];
+        if n > 128 << 20 {
+            return Err(format!("scene bounds {}×{}×{} are too large", dims[0], dims[1], dims[2]));
+        }
+        Ok(Grid { origin, dims, bdims, map: vec![0; n], pool: vec![], voxel_count: 0, counts: vec![], free: vec![] })
+    }
+
+    /// Slots handed out so far (the pool is slots × 512 bytes).
+    pub fn slots(&self) -> usize {
+        self.counts.len()
+    }
+
+    fn brick(&self, x: usize, y: usize, z: usize) -> usize {
+        (x >> 3) + self.bdims[0] * ((y >> 3) + self.bdims[1] * (z >> 3))
+    }
+
+    pub fn get(&self, x: usize, y: usize, z: usize) -> u8 {
+        if x >= self.dims[0] || y >= self.dims[1] || z >= self.dims[2] {
+            return 0;
+        }
+        match self.map[self.brick(x, y, z)] {
+            0 => 0,
+            m => self.pool[(m as usize - 1) * 512 + ((x & 7) | ((y & 7) << 3) | ((z & 7) << 6))],
+        }
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, z: usize, c: u8) {
+        if x >= self.dims[0] || y >= self.dims[1] || z >= self.dims[2] {
+            return;
+        }
+        let bi = self.brick(x, y, z);
+        let mut m = self.map[bi];
+        if m == 0 {
+            if c == 0 {
+                return;
+            }
+            let slot = match self.free.pop() {
+                Some(s) => s,
+                None => {
+                    self.counts.push(0);
+                    self.pool.resize(self.counts.len() * 512, 0);
+                    (self.counts.len() - 1) as u32
+                }
+            };
+            m = slot + 1;
+            self.map[bi] = m;
+        }
+        let slot = (m - 1) as usize;
+        let i = slot * 512 + ((x & 7) | ((y & 7) << 3) | ((z & 7) << 6));
+        let old = self.pool[i];
+        if old == c {
+            return;
+        }
+        self.pool[i] = c;
+        if old == 0 {
+            self.voxel_count += 1;
+            self.counts[slot] += 1;
+        } else if c == 0 {
+            self.voxel_count -= 1;
+            self.counts[slot] -= 1;
+            if self.counts[slot] == 0 {
+                self.map[bi] = 0;
+                self.free.push(slot as u32);
+            }
+        }
+    }
+
+    pub fn clear_box(&mut self, b: &GridBox) {
+        for bz in b.min[2] >> 3..=b.max[2] >> 3 {
+            for by in b.min[1] >> 3..=b.max[1] >> 3 {
+                for bx in b.min[0] >> 3..=b.max[0] >> 3 {
+                    let bi = bx + self.bdims[0] * (by + self.bdims[1] * bz);
+                    let m = self.map[bi];
+                    if m == 0 {
+                        continue;
+                    }
+                    let (x0, y0, z0) = (bx * 8, by * 8, bz * 8);
+                    if x0 >= b.min[0] && y0 >= b.min[1] && z0 >= b.min[2] && x0 + 7 <= b.max[0] && y0 + 7 <= b.max[1] && z0 + 7 <= b.max[2] {
+                        let slot = (m - 1) as usize;
+                        self.voxel_count -= self.counts[slot] as usize;
+                        self.counts[slot] = 0;
+                        self.pool[slot * 512..(slot + 1) * 512].fill(0);
+                        self.map[bi] = 0;
+                        self.free.push(slot as u32);
+                        continue;
+                    }
+                    for z in z0.max(b.min[2])..=(z0 + 7).min(b.max[2]) {
+                        for y in y0.max(b.min[1])..=(y0 + 7).min(b.max[1]) {
+                            for x in x0.max(b.min[0])..=(x0 + 7).min(b.max[0]) {
+                                self.set(x, y, z, 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A dense copy, x fastest (tests).
+    pub fn to_dense(&self) -> Vec<u8> {
+        let [dx, dy, dz] = self.dims;
+        let mut out = vec![0; dx * dy * dz];
+        for z in 0..dz {
+            for y in 0..dy {
+                for x in 0..dx {
+                    out[x + dx * (y + dy * z)] = self.get(x, y, z);
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Inclusive box in grid cells.
@@ -187,12 +308,8 @@ impl SceneBaker {
             hi = [0; 3];
         }
         let dims = [0, 1, 2].map(|i| (hi[i] - lo[i] + 1) as usize);
-        let total = dims[0] * dims[1] * dims[2];
-        if total > 1 << 30 {
-            return Err(format!("scene bounds {}×{}×{} are too large", dims[0], dims[1], dims[2]));
-        }
         let placed = place_models(&file, time);
-        let mut baker = SceneBaker { file, grid: Grid { origin: lo, dims, cells: vec![0; total], voxel_count: 0 }, placed, time };
+        let mut baker = SceneBaker { file, grid: Grid::new(lo, dims)?, placed, time };
         let all = baker.full_box();
         baker.rebuild(&[all]);
         Ok(baker)
@@ -228,7 +345,7 @@ impl SceneBaker {
         self.placed = next;
         self.time = time;
         let vol: usize = boxes.iter().map(|b| (0..3).map(|i| b.max[i] - b.min[i] + 1).product::<usize>()).sum();
-        if vol > self.grid.cells.len() / 3 {
+        if vol > self.grid.dims.iter().product::<usize>() / 3 {
             boxes = vec![self.full_box()];
         }
         self.rebuild(&boxes);
@@ -236,20 +353,9 @@ impl SceneBaker {
     }
 
     fn rebuild(&mut self, boxes: &[GridBox]) {
-        let [dx, dy, _] = self.grid.dims;
         let o = self.grid.origin;
         for b in boxes {
-            for z in b.min[2]..=b.max[2] {
-                for y in b.min[1]..=b.max[1] {
-                    let row = dx * (y + dy * z);
-                    for x in b.min[0]..=b.max[0] {
-                        if self.grid.cells[row + x] != 0 {
-                            self.grid.voxel_count -= 1;
-                        }
-                        self.grid.cells[row + x] = 0;
-                    }
-                }
-            }
+            self.grid.clear_box(b);
             for p in &self.placed {
                 let (lo, hi) = bounds(&self.file, p);
                 if (0..3).any(|i| hi[i] - o[i] < b.min[i] as i32 || lo[i] - o[i] > b.max[i] as i32) {
@@ -261,11 +367,7 @@ impl SceneBaker {
                     if x < b.min[0] as i32 || x > b.max[0] as i32 || y < b.min[1] as i32 || y > b.max[1] as i32 || z < b.min[2] as i32 || z > b.max[2] as i32 {
                         continue;
                     }
-                    let idx = x as usize + dx * (y as usize + dy * z as usize);
-                    if self.grid.cells[idx] == 0 {
-                        self.grid.voxel_count += 1;
-                    }
-                    self.grid.cells[idx] = v[3];
+                    self.grid.set(x as usize, y as usize, z as usize, v[3]);
                 }
             }
         }
@@ -297,7 +399,7 @@ mod tests {
         for t in [3, 15, 29, 0] {
             b.set_time(t);
             let fresh = SceneBaker::new(crate::vox::parse(&bytes).unwrap(), t).unwrap();
-            assert!(b.grid.cells == fresh.grid.cells, "frame {t}");
+            assert!(b.grid.to_dense() == fresh.grid.to_dense(), "frame {t}");
             assert_eq!(b.grid.voxel_count, fresh.grid.voxel_count);
         }
     }
